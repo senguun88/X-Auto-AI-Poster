@@ -1,8 +1,10 @@
 name: Daily X Auto Post
 
-on:
-  schedule:
-    - cron: "0 * * * *"   # runs every hour
+schedule:
+  - cron: "13 14 * * *"
+  - cron: "47 16 * * *"
+  - cron: "09 18 * * *"
+  - cron: "31 20 * * *"
   workflow_dispatch:
 
 jobs:
