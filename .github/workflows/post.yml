@@ -23,7 +23,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install tweepy google-genai google-auth
+          pip install tweepy google-genai google-auth pytz
 
       - name: Write Google credentials
         run: |
