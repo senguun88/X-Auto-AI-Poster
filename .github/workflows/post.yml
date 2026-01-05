@@ -2,7 +2,7 @@ name: Daily X Auto Post
 
 on:
   schedule:
-    - cron: "0 15 * * *" # 8:00 AM Mountain Time
+    - cron: "0 * * * *"   # runs every hour
   workflow_dispatch:
 
 jobs:
@@ -20,7 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install tweepy google-genai google-auth
+          pip install tweepy google-genai google-auth pytz
 
       - name: Write Google credentials
         run: |
