@@ -15,8 +15,9 @@ QUIET_START = 23            # 11 PM
 QUIET_END = 6               # 6 AM
 
 PROMPT = (
-    "Write ONE concise X post based on the most important tech news, "
-    "product launch, or AI update from today or the last 24 hours. "
+#    "Write ONE concise X post based on the most important tech news, "
+#    "product launch, or AI update from today or the last 24 hours. "
+    "Write ONE concise X post based on the Biggest crypto new from today"
     "Be factual, neutral, and useful. "
     "No emojis. No hashtags unless truly necessary. "
     "Maximum 240 characters. Do not exceed the limit."
