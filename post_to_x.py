@@ -15,12 +15,19 @@ QUIET_START = 23            # 11 PM
 QUIET_END = 6               # 6 AM
 
 PROMPT = (
-#    "Write ONE concise X post based on the most important tech news, "
-#    "product launch, or AI update from today or the last 24 hours. "
-    "Write ONE concise X post based on the Biggest crypto new from today or biggest market mover announcement"
-    "Be factual, neutral, and useful. "
-    "No emojis. No hashtags unless truly necessary. "
-    "Maximum 240 characters. Do not exceed the limit."
+"Write ONE concise X post about the single most important market-moving news from today.\n\n"
+    "Priority:\n"
+    "1) Major crypto news (Bitcoin, Ethereum, ETFs, regulation, exchange events)\n"
+    "2) If no major crypto news, choose a significant non-crypto market mover such as:\n"
+    "- Gold, oil, or USD moves\n"
+    "- Major tech company news (earnings, AI, layoffs, product launches)\n"
+    "- Macro events (Fed, CPI, jobs data, geopolitical shocks)\n\n"
+    "Rules:\n"
+    "- Be factual, neutral, and useful\n"
+    "- No hype or opinions\n"
+    "- No emojis\n"
+    "- No hashtags unless absolutely necessary\n"
+    "- Maximum 240 characters. Do NOT exceed the limit."
 )
 
 # ---------------- POST DECISION ----------------
