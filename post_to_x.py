@@ -1,40 +1,79 @@
 import os
+import random
+from datetime import datetime
+import pytz
+
 import tweepy
 from google import genai
-from google.genai.types import HttpOptions
 
-# ---------- X API v2 (OAuth 2.0 / OAuth 1.0a compatible) ----------
-client_x = tweepy.Client(
-    consumer_key=os.getenv("X_API_KEY"),
-    consumer_secret=os.getenv("X_API_SECRET"),
-    access_token=os.getenv("X_ACCESS_TOKEN"),
-    access_token_secret=os.getenv("X_ACCESS_SECRET"),
+# ---------------- SETTINGS ----------------
+
+MAX_CHARS = 260          # stay safely under X limit
+POST_CHANCE = 0.25       # ~5–6 posts/day (runs hourly)
+TIMEZONE = "US/Mountain"
+
+QUIET_HOURS = (23, 6)    # 11 PM – 6 AM
+
+PROMPT = """
+Write ONE concise, interesting tech news post for X.
+Rules:
+- Max 260 characters
+- No hashtags
+- No emojis
+- No clickbait
+- Neutral, informative tone
+- One sentence only
+- About recent tech, AI, software, or major companies
+"""
+
+# ---------------- TIME + RANDOM CONTROL ----------------
+
+tz = pytz.timezone(TIMEZONE)
+now = datetime.now(tz)
+hour = now.hour
+
+if hour >= QUIET_HOURS[0] or hour < QUIET_HOURS[1]:
+    print("Quiet hours — skipping post")
+    exit(0)
+
+if random.random() > POST_CHANCE:
+    print("Random skip — not posting this hour")
+    exit(0)
+
+print("Posting this hour")
+
+# ---------------- GEMINI (VERTEX AI) ----------------
+
+client = genai.Client(
+    vertexai=True,
+    project=os.environ["GOOGLE_CLOUD_PROJECT"],
+    location=os.environ.get("GOOGLE_CLOUD_LOCATION", "global"),
 )
 
-# ---------- Gemini via Vertex AI ----------
-client = genai.Client(http_options=HttpOptions(api_version="v1"))
-
-
-
-
-prompt = (
-    "Write ONE concise X post based on the most important tech news, "
-    "product launch, or AI update from today or the last 24 hours. "
-    "Be factual, neutral, and useful. "
-    "No emojis. No hashtags unless truly necessary. "
-    "Maximum 240 characters. Do not exceed the limit."
+response = client.models.generate_content(
+    model="gemini-1.5-flash",
+    contents=PROMPT,
 )
 
+text = response.text.strip().replace("\n", " ")
 
+if len(text) > MAX_CHARS:
+    text = text[:MAX_CHARS - 1]
 
-resp = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents=prompt,
+print("Generated post:")
+print(text)
+
+# ---------------- X (TWITTER) ----------------
+
+auth = tweepy.OAuth1UserHandler(
+    os.environ["X_API_KEY"],
+    os.environ["X_API_SECRET"],
+    os.environ["X_ACCESS_TOKEN"],
+    os.environ["X_ACCESS_SECRET"],
 )
 
-tweet_text = (resp.text or "").strip()[:280]
+api = tweepy.API(auth)
 
-# ---------- Post using X API v2 ----------
-client_x.create_tweet(text=tweet_text)
+api.update_status(status=text)
 
-print("Posted:", tweet_text)
+print("Post sent successfully")
