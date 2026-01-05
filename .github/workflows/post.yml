@@ -19,9 +19,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-  run: |
-    pip install tweepy google-genai google-auth
-  
+        run: |
+          pip install tweepy google-genai google-auth
+
       - name: Write Google credentials
         run: |
           echo '${{ secrets.GCP_SA_KEY_JSON }}' > /tmp/gcp_key.json
