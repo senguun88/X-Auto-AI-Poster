@@ -2,7 +2,7 @@ name: Daily X Auto Post
 
 on:
   schedule:
-    - cron: "0 15 * * *"   # 8:00 AM Mountain Time
+    - cron: "0 15 * * *" # 8:00 AM Mountain Time
   workflow_dispatch:
 
 jobs:
@@ -21,19 +21,20 @@ jobs:
       - name: Install dependencies
         run: |
           pip install tweepy google-genai google-auth
-- name: Write Google credentials
-  run: |
-    echo '${{ secrets.GCP_SA_KEY_JSON }}' > /tmp/gcp_key.json
+
+      - name: Write Google credentials
+        run: |
+          echo '${{ secrets.GCP_SA_KEY_JSON }}' > /tmp/gcp_key.json
+
       - name: Run auto poster
         run: python post_to_x.py
-env:
-  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp_key.json
-  GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-  GOOGLE_CLOUD_LOCATION: global
-  GOOGLE_GENAI_USE_VERTEXAI: "True"
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp_key.json
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          GOOGLE_CLOUD_LOCATION: global
+          GOOGLE_GENAI_USE_VERTEXAI: "True"
 
-  X_API_KEY: ${{ secrets.X_API_KEY }}
-  X_API_SECRET: ${{ secrets.X_API_SECRET }}
-  X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
-  X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
-        
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
