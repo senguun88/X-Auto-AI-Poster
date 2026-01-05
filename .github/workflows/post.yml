@@ -1,11 +1,12 @@
 name: Daily X Auto Post
 
-schedule:
-  - cron: "13 14 * * *"
-  - cron: "47 16 * * *"
-  - cron: "09 18 * * *"
-  - cron: "31 20 * * *"
+on:
   workflow_dispatch:
+  schedule:
+    - cron: "13 14 * * *"
+    - cron: "47 16 * * *"
+    - cron: "09 18 * * *"
+    - cron: "31 20 * * *"
 
 jobs:
   post:
@@ -22,7 +23,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install tweepy google-genai google-auth pytz
+          pip install tweepy google-genai google-auth
 
       - name: Write Google credentials
         run: |
