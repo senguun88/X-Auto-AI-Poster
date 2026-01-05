@@ -14,10 +14,18 @@ client_x = tweepy.Client(
 # ---------- Gemini via Vertex AI ----------
 client = genai.Client(http_options=HttpOptions(api_version="v1"))
 
+
+
+
 prompt = (
-    "Write ONE original X post about tech or crypto. "
-    "Clear, useful, no emojis. Under 240 characters."
+    "Write ONE concise X post based on the most important tech news, "
+    "product launch, or AI update from today or the last 24 hours. "
+    "Be factual, neutral, and useful. "
+    "No emojis. No hashtags unless truly necessary. "
+    "Maximum 240 characters. Do not exceed the limit."
 )
+
+
 
 resp = client.models.generate_content(
     model="gemini-2.5-flash",
