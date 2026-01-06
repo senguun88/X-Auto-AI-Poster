@@ -9,7 +9,7 @@ from google.genai.types import HttpOptions
 
 # ---------------- SETTINGS ----------------
 MAX_CHARS = 260
-POST_CHANCE = 1          # hourly schedule -> ~5–6 posts/day average
+POST_CHANCE = 0.25          # hourly schedule -> ~5–6 posts/day average
 TIMEZONE = "US/Mountain"
 QUIET_START = 23            # 11 PM
 QUIET_END = 6               # 6 AM
