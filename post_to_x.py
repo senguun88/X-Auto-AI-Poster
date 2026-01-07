@@ -72,5 +72,5 @@ client_x = tweepy.Client(
     access_token_secret=os.getenv("X_ACCESS_SECRET"),
 )
 
-client_x.create_tweet(text=text)
+client_x.create_tweet(text=text, user_auth=True)
 print("Posted to X ✅")
