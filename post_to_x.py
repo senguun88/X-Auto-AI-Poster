@@ -65,6 +65,8 @@ text = text[:MAX_CHARS]
 print("Generated text:", text)
 
 # ---------------- X POST (API v2) ----------------
+import tweepy
+
 client_x = tweepy.Client(
     consumer_key=os.getenv("X_API_KEY"),
     consumer_secret=os.getenv("X_API_SECRET"),
@@ -72,5 +74,18 @@ client_x = tweepy.Client(
     access_token_secret=os.getenv("X_ACCESS_SECRET"),
 )
 
-client_x.create_tweet(text=text, user_auth=True)
-print("Posted to X ✅")
+try:
+    client_x.create_tweet(text=text, user_auth=True)
+    print("Posted to X ✅")
+except tweepy.Forbidden as e:
+    # Print the actual response body from X (this is the key)
+    r = getattr(e, "response", None)
+    if r is not None:
+        print("X STATUS:", r.status_code)
+        print("X BODY:", r.text)
+    else:
+        print("X Forbidden 403:", str(e))
+
+    # Don't fail the workflow (exit clean)
+    print("SKIP: X API blocked this request (likely plan/permissions).")
+    raise SystemExit(0)
