@@ -64,13 +64,20 @@ text = text[:MAX_CHARS]
 
 print("Generated text:", text)
 
-# ---------------- X POST (API v2) ----------------
-client_x = tweepy.Client(
-    consumer_key=os.getenv("X_API_KEY"),
-    consumer_secret=os.getenv("X_API_SECRET"),
-    access_token=os.getenv("X_ACCESS_TOKEN"),
-    access_token_secret=os.getenv("X_ACCESS_SECRET"),
+# ---------------- X POST (API v1.1) ----------------
+X_API_KEY = os.getenv("X_API_KEY")
+X_API_SECRET = os.getenv("X_API_SECRET")
+X_ACCESS_TOKEN = os.getenv("X_ACCESS_TOKEN")
+X_ACCESS_SECRET = os.getenv("X_ACCESS_SECRET")
+
+auth = tweepy.OAuth1UserHandler(
+    X_API_KEY,
+    X_API_SECRET,
+    X_ACCESS_TOKEN,
+    X_ACCESS_SECRET
 )
 
-client_x.create_tweet(text=text, user_auth=True)
+api = tweepy.API(auth)
+
+api.update_status(status=text)
 print("Posted to X ✅")
