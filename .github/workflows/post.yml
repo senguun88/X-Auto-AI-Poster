@@ -2,67 +2,36 @@ name: Daily X Auto Post
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "13 14 * * *" # 7:13 AM
-    - cron: "47 16 * * *" # 9:47 AM
-    - cron: "09 18 * * *" # 11:09 AM
-    - cron: "31 20 * * *" # 1:31 PM
-    - cron: "02 0 * * *" # 5:02 PM
-    - cron: "41 0 * * *" # 5:41 PM
+schedule:
+  # 🌅 Morning (Mountain Time)
+  - cron: "05 13 * * *" # 6:05 AM MT
+  - cron: "25 13 * * *" # 6:25 AM MT
+  - cron: "45 13 * * *" # 6:45 AM MT
+  - cron: "10 14 * * *" # 7:10 AM MT
+  - cron: "35 14 * * *" # 7:35 AM MT
+  - cron: "00 15 * * *" # 8:00 AM MT
+  - cron: "30 15 * * *" # 8:30 AM MT
+  - cron: "15 16 * * *" # 9:15 AM MT
 
-    - cron: "11 1 * * *" # 6:11 PM
-    - cron: "53 1 * * *" # 6:53 PM
+  # 🌤️ Afternoon (Mountain Time)
+  - cron: "05 19 * * *" # 12:05 PM MT
+  - cron: "35 19 * * *" # 12:35 PM MT
+  - cron: "10 20 * * *" # 1:10 PM MT
+  - cron: "40 20 * * *" # 1:40 PM MT
+  - cron: "15 21 * * *" # 2:15 PM MT
+  - cron: "45 21 * * *" # 2:45 PM MT
+  - cron: "20 22 * * *" # 3:20 PM MT
+  - cron: "50 22 * * *" # 3:50 PM MT
 
-    - cron: "07 2 * * *" # 7:07 PM
-    - cron: "36 2 * * *" # 7:36 PM
-
-    - cron: "18 3 * * *" # 8:18 PM
-    - cron: "47 3 * * *" # 8:47 PM
-
-    - cron: "05 4 * * *" # 9:05 PM
-    - cron: "32 4 * * *" # 9:32 PM
-
-    - cron: "14 5 * * *" # 10:14 PM
-    - cron: "58 5 * * *" # 10:58 PM
-
-    - cron: "09 6 * * *" # 11:09 PM
-    - cron: "44 6 * * *" # 11:44 PM
-
-    - cron: "03 7 * * *" # 12:03 AM
-    - cron: "39 7 * * *" # 12:39 AM
-
-    - cron: "16 8 * * *" # 1:16 AM
-    - cron: "51 8 * * *" # 1:51 AM
-
-    - cron: "06 9 * * *" # 2:06 AM
-    - cron: "34 9 * * *" # 2:34 AM
-
-    - cron: "12 10 * * *" # 3:12 AM
-    - cron: "49 10 * * *" # 3:49 AM
-
-    - cron: "01 11 * * *" # 4:01 AM
-    - cron: "37 11 * * *" # 4:37 AM
-
-    - cron: "19 12 * * *" # 5:19 AM
-    - cron: "55 12 * * *" # 5:55 AM
-
-    - cron: "08 13 * * *" # 6:08 AM
-    - cron: "42 13 * * *" # 6:42 AM
-
-    - cron: "04 14 * * *" # 7:04 AM
-    - cron: "31 14 * * *" # 7:31 AM
-
-    - cron: "15 15 * * *" # 8:15 AM
-    - cron: "57 15 * * *" # 8:57 AM
-
-    - cron: "10 16 * * *" # 9:10 AM
-    - cron: "46 16 * * *" # 9:46 AM
-
-    - cron: "00 17 * * *" # 10:00 AM
-    - cron: "33 17 * * *" # 10:33 AM
-
-    - cron: "17 18 * * *" # 11:17 AM
-    - cron: "52 18 * * *" # 11:52 AM
+  # 🌆 Evening (Mountain Time)
+  - cron: "05 0 * * *"  # 5:05 PM MT
+  - cron: "35 0 * * *"  # 5:35 PM MT
+  - cron: "10 1 * * *"  # 6:10 PM MT
+  - cron: "40 1 * * *"  # 6:40 PM MT
+  - cron: "15 2 * * *"  # 7:15 PM MT
+  - cron: "45 2 * * *"  # 7:45 PM MT
+  - cron: "20 3 * * *"  # 8:20 PM MT
+  - cron: "50 3 * * *"  # 8:50 PM MT
 
 jobs:
   post:
