@@ -72,6 +72,15 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      # ✅ NEW: Persist bot memory (prevents repeat posts + repeat retweets)
+      - name: Restore bot state cache
+        uses: actions/cache@v4
+        with:
+          path: .bot_state
+          key: bot-state-${{ github.run_id }}
+          restore-keys: |
+            bot-state-
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
