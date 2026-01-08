@@ -17,7 +17,7 @@ QUIET_START = 23            # 11 PM
 QUIET_END = 6               # 6 AM
 
 # Mix in retweets sometimes (keeps the account looking human)
-RETWEET_CHANCE = 0.20       # 20% retweet, 80% AI post
+RETWEET_CHANCE = 0.00       # 20% retweet, 80% AI post
 
 # Retweet filters (tune these)
 RT_QUERY = '(bitcoin OR btc OR ethereum OR etf OR fed OR cpi OR jobs) -is:retweet lang:en'
@@ -31,19 +31,34 @@ RETWEETED_IDS_FILE = os.path.join(STATE_DIR, "retweeted_ids.txt")
 DAILY_POSTS_FILE = os.path.join(STATE_DIR, "daily_posts.json")
 
 PROMPT_BASE = (
-    "Write ONE concise X post about the single most important market-moving news from today.\n\n"
-    "Priority:\n"
-    "1) Major crypto news (Bitcoin, Ethereum, ETFs, regulation, exchange events)\n"
-    "2) If no major crypto news, choose a significant non-crypto market mover such as:\n"
-    "- Gold, oil, or USD moves\n"
-    "- Major tech company news (earnings, AI, layoffs, product launches)\n"
-    "- Macro events (Fed, CPI, jobs data, geopolitical shocks)\n\n"
-    "Rules:\n"
-    "- Be factual, neutral, and useful\n"
-    "- No hype or opinions\n"
+    "Write ONE concise, high-impact X post about the single most important market-moving event from today.\n\n"
+
+    "Tone & style:\n"
+    "- Write like a Bloomberg/Reuters terminal headline rewritten for X\n"
+    "- Lead with the surprise/key number or the outcome first\n"
+    "- Short sentences. No fluff. No filler\n"
+    "- Prefer numbers over adjectives\n"
+    "- State the immediate market implication in one line (BTC/ETH, yields, USD, equities, oil, gold)\n\n"
+
+    "Priority order:\n"
+    "1) Major crypto news (Bitcoin, Ethereum, ETFs, regulation, exchange actions)\n"
+    "2) If no major crypto news, choose ONE major non-crypto market mover:\n"
+    "- Fed/CPI/jobs data\n"
+    "- USD/yields, oil, gold\n"
+    "- Major tech earnings or AI announcements\n\n"
+
+    "Hard rules:\n"
+    "- Factual only. No opinions. No predictions\n"
     "- No emojis\n"
-    "- No hashtags unless absolutely necessary\n"
-    "- Maximum 240 characters. Do NOT exceed the limit.\n"
+    "- No hashtags\n"
+    "- No questions\n"
+    "- Avoid filler phrases like 'today', 'investors are watching', 'markets are reacting'\n"
+    "- Target 180–220 characters (do not exceed 240)\n"
+    "- Output only the post text, nothing else\n\n"
+
+    "Format:\n"
+    "Line 1: What happened (key fact/number)\n"
+    "Line 2: Immediate impact (what moved + why it matters)\n"
 )
 
 # ---------------- HELPERS ----------------
