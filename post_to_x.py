@@ -17,7 +17,7 @@ QUIET_START = 23            # 11 PM
 QUIET_END = 6               # 6 AM
 
 # Mix in retweets sometimes (keeps the account looking human)
-RETWEET_CHANCE = 0.00       # currently set to 0% retweet change, can be set to 0.20 to achieve 20% retweet, 80% AI post
+RETWEET_CHANCE = 0.00       # currently set to 0% retweet chance, can be set to 0.20 to achieve 20% retweet, 80% AI post
 
 # Retweet filters (tune these)
 RT_QUERY = '(bitcoin OR btc OR ethereum OR etf OR fed OR cpi OR jobs) -is:retweet lang:en'
