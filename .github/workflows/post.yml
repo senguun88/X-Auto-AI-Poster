@@ -2,7 +2,7 @@ name: Daily X Auto Post
 
 on:
   workflow_dispatch:
-schedule:
+  schedule:
   # 🌅 Morning (Mountain Time)
   - cron: "05 13 * * *" # 6:05 AM MT
   - cron: "25 13 * * *" # 6:25 AM MT
