@@ -69,13 +69,16 @@ jobs:
           # 🔴 REQUIRED: accounts to reply to (comma-separated, no @)
           TARGET_ACCOUNTS: "unusual_whales,CoinDesk,Cointelegraph,WatcherGuru,TheBlock__"
 
-          # Google / Gemini
+          # 🔴 REQUIRED: Bearer token for SEARCH/READ
+          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
+
+          # Google / Gemini (Vertex AI)
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp_key.json
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GOOGLE_CLOUD_LOCATION: global
           GOOGLE_GENAI_USE_VERTEXAI: "True"
 
-          # X API
+          # X API (user auth for REPLY/WRITE)
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
