@@ -4,6 +4,7 @@ from datetime import datetime
 import hashlib
 import json
 import pytz
+import re
 
 import tweepy
 from google import genai
@@ -11,72 +12,42 @@ from google.genai.types import HttpOptions
 
 # ---------------- SETTINGS ----------------
 MAX_CHARS = 260
+
+# Run schedule can still be frequent; posting is controlled by POST_CHANCE
 POST_CHANCE = 0.25          # hourly schedule -> ~5–6 posts/day average
+
 TIMEZONE = "US/Mountain"
 QUIET_START = 23            # 11 PM
 QUIET_END = 6               # 6 AM
 
-# Mix in retweets sometimes (keeps the account looking human)
-RETWEET_CHANCE = 0.00       # currently set to 0% retweet chance, can be set to 0.20 to achieve 20% retweet, 80% AI post
-
-# Retweet filters (tune these)
-RT_QUERY = '(bitcoin OR btc OR ethereum OR etf OR fed OR cpi OR jobs) -is:retweet lang:en'
-RT_MIN_LIKES = 200
-RT_MIN_RTS = 50
-RT_MAX_RESULTS = 30
-
 # State files (persisted via GitHub Actions cache in the YAML below)
 STATE_DIR = ".bot_state"
-RETWEETED_IDS_FILE = os.path.join(STATE_DIR, "retweeted_ids.txt")
 DAILY_POSTS_FILE = os.path.join(STATE_DIR, "daily_posts.json")
 
+# ---------------- HUMOR PROMPT (EVERGREEN) ----------------
 PROMPT_BASE = (
-    "Write ONE concise, high-impact X post about the single most important market-moving event from today.\n\n"
-
-    "Tone & style:\n"
-    "- Write like a Bloomberg/Reuters terminal headline rewritten for X\n"
-    "- Lead with the surprise/key number or the outcome first\n"
-    "- Short sentences. No fluff. No filler\n"
-    "- Prefer numbers over adjectives\n"
-    "- State the immediate market implication in one line (BTC/ETH, yields, USD, equities, oil, gold)\n\n"
-
-    "Priority order:\n"
-    "1) Major crypto news (Bitcoin, Ethereum, ETFs, regulation, exchange actions)\n"
-    "2) If no major crypto news, choose ONE major non-crypto market mover:\n"
-    "- Fed/CPI/jobs data\n"
-    "- USD/yields, oil, gold\n"
-    "- Major tech earnings or AI announcements\n\n"
-
+    "Write ONE funny, high-engagement X post.\n\n"
+    "Tone:\n"
+    "- Relatable, clever, punchy.\n"
+    "- Clean humor (no harassment, no slurs, no punching down).\n"
+    "- No politics.\n\n"
     "Hard rules:\n"
-    "- Factual only. No opinions. No predictions\n"
-    "- No emojis\n"
-    "- No hashtags\n"
-    "- No questions\n"
-    "- Avoid filler phrases like 'today', 'investors are watching', 'markets are reacting'\n"
-    "- 2 lines total, each line should be short\n"
-    "- Target 180–220 characters (do not exceed 240)\n"
-    "- Output only the post text, nothing else\n\n"
-
-    "Format:\n"
-    "Line 1: What happened (key fact/number)\n"
-    "Line 2: Immediate impact (what moved + why it matters)\n"
+    "- Evergreen only (no news, no current events, no dates, no numbers tied to real-world events).\n"
+    "- Do NOT mention specific BTC/ETH prices.\n"
+    "- No emojis.\n"
+    "- No hashtags.\n"
+    "- No questions.\n"
+    "- Under 220 characters.\n"
+    "- Output only the post text.\n\n"
+    "Good topics:\n"
+    "- Work meetings, procrastination, money habits, tech/AI confusion, gym motivation, adulting, parenting.\n"
+    "- Light crypto vibes allowed but only as feelings/vibes (no price levels).\n\n"
+    "Make it sound like a human wrote it."
 )
 
 # ---------------- HELPERS ----------------
 def ensure_state_dir():
     os.makedirs(STATE_DIR, exist_ok=True)
-
-def load_retweeted_ids():
-    ensure_state_dir()
-    if not os.path.exists(RETWEETED_IDS_FILE):
-        return set()
-    with open(RETWEETED_IDS_FILE, "r", encoding="utf-8") as f:
-        return set(line.strip() for line in f if line.strip())
-
-def save_retweeted_id(tweet_id: str):
-    ensure_state_dir()
-    with open(RETWEETED_IDS_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{tweet_id}\n")
 
 def load_daily_posts():
     ensure_state_dir()
@@ -100,12 +71,42 @@ def today_key(tzname: str) -> str:
     tz = pytz.timezone(tzname)
     return datetime.now(tz).strftime("%Y-%m-%d")
 
+def basic_safety_block(text: str) -> bool:
+    """
+    Simple local filter to avoid obvious risky topics.
+    """
+    t = text.lower()
+    politics = ["election", "trump", "biden", "democrat", "republican", "congress", "senate"]
+    if any(w in t for w in politics):
+        return True
+    harassment = ["kill yourself", "kys", "go die"]
+    if any(w in t for w in harassment):
+        return True
+    return False
+
+def looks_like_btc_price_anchor(text: str) -> bool:
+    """
+    Blocks posts that mention BTC/Bitcoin + a specific large price level which can go stale fast.
+    Examples blocked: "BTC above $69k", "BTC at 90000", "$90,000 Bitcoin"
+    """
+    t = text.lower()
+    if ("btc" not in t) and ("bitcoin" not in t):
+        return False
+
+    pats = [
+        r"\$\s*\d{2,3}\s*[kK]\b",            # $90k
+        r"\b\d{2,3}\s*[kK]\b",               # 90k
+        r"\$\s*\d{1,3}(?:,\d{3})+\b",        # $90,000
+        r"\b\d{5,6}\b",                      # 90000
+    ]
+    return any(re.search(p, text) for p in pats)
+
 # ---------------- POST DECISION ----------------
 tz = pytz.timezone(TIMEZONE)
 now = datetime.now(tz)
 hour = now.hour
 
-event_name = os.getenv("GITHUB_EVENT_NAME", "")  # 'workflow_dispatch' when you run manually
+event_name = os.getenv("GITHUB_EVENT_NAME", "")  # 'workflow_dispatch' when run manually
 is_manual = (event_name == "workflow_dispatch")
 
 # Quiet hours only apply to scheduled runs
@@ -119,7 +120,7 @@ if not is_manual:
         print(f"SKIP: Random skip r={r:.3f} > chance={POST_CHANCE}")
         raise SystemExit(0)
 
-print("POST: Proceeding")
+print("POST: Proceeding (humor-only)")
 
 # ---------------- X CLIENT (API v2) ----------------
 client_x = tweepy.Client(
@@ -129,98 +130,91 @@ client_x = tweepy.Client(
     access_token_secret=os.getenv("X_ACCESS_SECRET"),
 )
 
-# ---------------- RETWEET MODE ----------------
-def try_retweet_important() -> bool:
-    """
-    Returns True if retweet succeeded, else False (fallback to AI post).
-    """
-    try:
-        seen = load_retweeted_ids()
-
-        resp = client_x.search_recent_tweets(
-            query=RT_QUERY,
-            max_results=min(RT_MAX_RESULTS, 100),
-            tweet_fields=["public_metrics", "created_at"],
-        )
-        if not resp or not resp.data:
-            print("RETWEET: No tweets found")
-            return False
-
-        candidates = []
-        for t in resp.data:
-            tid = str(t.id)
-            if tid in seen:
-                continue
-
-            m = t.public_metrics or {}
-            likes = m.get("like_count", 0)
-            rts = m.get("retweet_count", 0)
-            replies = m.get("reply_count", 0)
-
-            if likes >= RT_MIN_LIKES and rts >= RT_MIN_RTS:
-                score = likes + (2 * rts) + replies
-                candidates.append((score, t))
-
-        if not candidates:
-            print("RETWEET: No tweets met thresholds")
-            return False
-
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        best = candidates[0][1]
-
-        client_x.retweet(best.id, user_auth=True)
-        save_retweeted_id(str(best.id))
-        print(f"RETWEET: Retweeted {best.id} ✅")
-        return True
-
-    except tweepy.Forbidden as e:
-        r = getattr(e, "response", None)
-        if r is not None:
-            print("RETWEET X STATUS:", r.status_code)
-            print("RETWEET X BODY:", r.text)
-        else:
-            print("RETWEET Forbidden 403:", str(e))
-        print("RETWEET: Blocked by plan/permissions. Fallback to AI post.")
-        return False
-
-    except Exception as e:
-        print("RETWEET: Unexpected error:", repr(e))
-        return False
-
-# ---------------- AI POST MODE ----------------
+# ---------------- AI HUMOR MODE ----------------
 def generate_ai_text(avoid_texts: list[str]) -> str:
     client_ai = genai.Client(http_options=HttpOptions(api_version="v1"))
 
     avoid_block = ""
     if avoid_texts:
-        # Keep it short to avoid overprompting
         recent = avoid_texts[-5:]
         avoid_block = (
             "\nExtra rule:\n"
-            "Do NOT repeat the same topic as any of these posts already made today:\n"
+            "Do NOT repeat the same joke/topic as any of these posts already made today:\n"
             + "\n".join([f"- {t}" for t in recent])
-            + "\nPick a different major market-moving story from today.\n"
+            + "\nPick a different angle.\n"
         )
 
     prompt = PROMPT_BASE + avoid_block
 
-    resp = client_ai.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
+    # Generate multiple candidates
+    candidates = []
+    for _ in range(5):
+        resp = client_ai.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        text = (resp.text or "").strip()
+        text = re.sub(r"\s+", " ", text)
+        if text:
+            candidates.append(text[:240])
+
+    # Local filters
+    filtered = []
+    for c in candidates:
+        if basic_safety_block(c):
+            continue
+        if looks_like_btc_price_anchor(c):
+            continue
+        filtered.append(c[:220])
+
+    if not filtered:
+        return ""
+
+    # Ask model to pick best (JSON only)
+    scoring_prompt = (
+        "Pick the single best X post for engagement.\n"
+        "Return ONLY JSON: {\"best_index\": <int>}.\n"
+        "Reject anything that is political, mean, or needs current events.\n\n"
+        "Candidates:\n" + "\n".join([f"{i}. {c}" for i, c in enumerate(filtered)])
     )
-    text = (resp.text or "").strip().replace("\n", " ")
-    return text[:MAX_CHARS]
+
+    pick = client_ai.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=scoring_prompt,
+    )
+    raw = (pick.text or "").strip()
+
+    try:
+        data = json.loads(raw)
+        idx = int(data.get("best_index", 0))
+        if 0 <= idx < len(filtered):
+            return filtered[idx][:MAX_CHARS]
+    except Exception:
+        pass
+
+    return filtered[0][:MAX_CHARS]
 
 def post_ai_text():
     day = today_key(TIMEZONE)
     data = load_daily_posts()
     todays = data.get(day, [])
 
-    # Generate up to 3 tries if it repeats
-    for attempt in range(3):
+    # Generate up to 4 tries if duplicates / blocked content
+    for attempt in range(4):
         text = generate_ai_text([p["text"] for p in todays])
-        h = text_hash(text)
+        if not text:
+            print("AI: Empty output, regenerating...")
+            continue
 
+        # Final guardrails
+        if basic_safety_block(text):
+            print("AI: Blocked by safety filter, regenerating...")
+            continue
+        if looks_like_btc_price_anchor(text):
+            print("AI: Blocked BTC price anchor, regenerating...")
+            continue
+
+        h = text_hash(text)
         if any(p.get("hash") == h for p in todays):
             print(f"AI: Duplicate text hash (attempt {attempt+1}), regenerating...")
             continue
@@ -248,13 +242,8 @@ def post_ai_text():
             print("SKIP: X API blocked this request (likely plan/permissions).")
             raise SystemExit(0)
 
-    print("AI: Could not generate a non-duplicate post after retries. Skipping.")
+    print("AI: Could not generate a safe non-duplicate post after retries. Skipping.")
     raise SystemExit(0)
 
-# ---------------- MAIN: choose retweet vs AI ----------------
-if random.random() < RETWEET_CHANCE:
-    did = try_retweet_important()
-    if not did:
-        post_ai_text()
-else:
-    post_ai_text()
+# ---------------- MAIN: humor only ----------------
+post_ai_text()
