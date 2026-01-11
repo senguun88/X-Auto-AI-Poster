@@ -24,8 +24,8 @@ TIMEZONE = "US/Mountain"
 QUIET_START = 23            # 11 PM
 QUIET_END = 6               # 6 AM
 
-POST_CHANCE = 0.35          # chance per scheduled run (set higher if you want more replies)
-REPLY_CHANCE = 0.90         # 90% reply, 10% original (set 1.0 for replies only)
+POST_CHANCE = 0.00          # chance per scheduled run (set higher if you want more replies)
+REPLY_CHANCE = 1.00         # 90% reply, 10% original (set 1.0 for replies only)
 
 MAX_CHARS = 260
 MAX_REPLY_CHARS = 200
