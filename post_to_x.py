@@ -12,17 +12,13 @@ from google.genai.types import HttpOptions
 # ============================================================
 #  REPLY-ONLY AI BOT (NEVER POSTS ORIGINAL TWEETS)
 #
-#  What it does:
-#   - Finds recent, engaged tweets from TARGET_ACCOUNTS
-#   - Uses AI to pick the best target to reply to
-#   - Uses AI to generate a short witty reply
-#   - Replies ONCE, then exits
-#
-#  If it cannot find a target OR reply generation fails:
-#   - It SKIPS (does NOT post anything)
+#  Fix included:
+#   - Uses X_BEARER_TOKEN for READ/search (client_read)
+#   - Uses user OAuth tokens for WRITE/reply (client_write)
 #
 #  REQUIRED (GitHub Actions env):
 #    TARGET_ACCOUNTS="unusual_whales,CoinDesk,Cointelegraph,WatcherGuru,TheBlock__"
+#    X_BEARER_TOKEN=${{ secrets.X_BEARER_TOKEN }}
 # ============================================================
 
 # ---------------- SETTINGS ----------------
@@ -30,24 +26,19 @@ TIMEZONE = "US/Mountain"
 QUIET_START = 23            # 11 PM
 QUIET_END = 6               # 6 AM
 
-# Run frequency can be high; actual reply attempt is controlled here:
 RUN_CHANCE = 1.00           # 1.0 = always attempt on each run
 
 MAX_REPLY_CHARS = 200
 
-# Only reply to tweets newer than this
 MAX_TWEET_AGE_HOURS = 24
 
-# Candidate selection limits
 PER_ACCOUNT_MAX = 50
 CANDIDATE_POOL_LIMIT = 80
 AI_FINALISTS = 12
 
-# Engagement thresholds (loosen if you aren't finding targets)
 MIN_TARGET_LIKES = 5
 MIN_TARGET_RTS = 1
 
-# Target accounts (comma-separated handles WITHOUT @) set in GitHub Actions env:
 TARGET_ACCOUNTS = [a.strip().lstrip("@") for a in os.getenv("TARGET_ACCOUNTS", "").split(",") if a.strip()]
 
 # ---------------- STATE ----------------
@@ -130,8 +121,15 @@ def strip_quotes(text: str) -> str:
 def ai_client():
     return genai.Client(http_options=HttpOptions(api_version="v1"))
 
-# ---------------- X CLIENT ----------------
-client_x = tweepy.Client(
+# ---------------- X CLIENTS ----------------
+# READ/search client (requires Bearer Token)
+client_read = tweepy.Client(
+    bearer_token=os.getenv("X_BEARER_TOKEN"),
+    wait_on_rate_limit=True
+)
+
+# WRITE/reply client (user auth)
+client_write = tweepy.Client(
     consumer_key=os.getenv("X_API_KEY"),
     consumer_secret=os.getenv("X_API_SECRET"),
     access_token=os.getenv("X_ACCESS_TOKEN"),
@@ -158,6 +156,8 @@ if not is_manual:
 
 print("RUN: Proceeding (reply-only)")
 print("DEBUG: TARGET_ACCOUNTS =", TARGET_ACCOUNTS)
+bt = os.getenv("X_BEARER_TOKEN") or ""
+print("DEBUG: X_BEARER_TOKEN present =", bool(bt), "len =", len(bt))
 
 # ---------------- AI: pick best tweet ----------------
 def ai_pick_best_tweet(candidates: list[dict]) -> dict | None:
@@ -210,7 +210,7 @@ def find_target_tweet() -> dict | None:
     for handle in TARGET_ACCOUNTS:
         query = f"from:{handle} -is:retweet -is:reply lang:en"
         try:
-            resp = client_x.search_recent_tweets(
+            resp = client_read.search_recent_tweets(
                 query=query,
                 max_results=min(PER_ACCOUNT_MAX, 100),
                 tweet_fields=["public_metrics", "created_at"],
@@ -290,7 +290,7 @@ def post_reply(tweet_id: str, reply_text: str):
         raise SystemExit(0)
 
     try:
-        client_x.create_tweet(
+        client_write.create_tweet(
             text=reply_text,
             in_reply_to_tweet_id=tweet_id,
             user_auth=True
