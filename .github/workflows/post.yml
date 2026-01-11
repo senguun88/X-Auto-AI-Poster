@@ -63,13 +63,19 @@ jobs:
           ${{ secrets.GCP_SA_KEY_JSON }}
           EOF
 
-      - name: Run auto poster
+      - name: Run reply-only bot
         run: python post_to_x.py
         env:
+          # 🔴 REQUIRED: accounts to reply to (comma-separated, no @)
+          TARGET_ACCOUNTS: "unusual_whales,CoinDesk,Cointelegraph,WatcherGuru,TheBlock__"
+
+          # Google / Gemini
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp_key.json
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GOOGLE_CLOUD_LOCATION: global
           GOOGLE_GENAI_USE_VERTEXAI: "True"
+
+          # X API
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
