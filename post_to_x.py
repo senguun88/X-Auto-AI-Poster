@@ -23,7 +23,7 @@ TIMEZONE = "US/Mountain"
 QUIET_START = 23
 QUIET_END = 6
 
-RUN_CHANCE = 1.00  # consider 0.30–0.50 if you schedule many runs/day
+RUN_CHANCE = 0.50  # consider 0.30–0.50 if you schedule many runs/day
 
 MAX_REPLY_CHARS = 200
 MAX_TWEET_AGE_HOURS = 24
