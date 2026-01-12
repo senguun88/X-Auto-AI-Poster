@@ -12,9 +12,9 @@ from google.genai.types import HttpOptions
 # ============================================================
 #  REPLY-ONLY AI BOT (NEVER POSTS ORIGINAL TWEETS)
 #
-#  Optimized for X rate limits:
-#   - Fewer searches per run
-#   - Smaller candidate pool
+#  Rate-limit safe:
+#   - ONE search call per run (OR query across accounts)
+#   - Persists rate-limit reset in .bot_state/state.json
 #   - Exits cleanly on rate limit (no 900s sleep)
 # ============================================================
 
@@ -23,17 +23,15 @@ TIMEZONE = "US/Mountain"
 QUIET_START = 23
 QUIET_END = 6
 
-RUN_CHANCE = 1.00
+RUN_CHANCE = 1.00  # consider 0.30–0.50 if you schedule many runs/day
 
 MAX_REPLY_CHARS = 200
 MAX_TWEET_AGE_HOURS = 24
 
-# ↓ Lower = fewer API calls / less load
-PER_ACCOUNT_MAX = 10          # was 50
-CANDIDATE_POOL_LIMIT = 30     # was 80
-AI_FINALISTS = 10             # was 12
+CANDIDATE_POOL_LIMIT = 30
+AI_FINALISTS = 10
 
-MIN_TARGET_LIKES = 3          # loosened slightly to find more targets
+MIN_TARGET_LIKES = 3
 MIN_TARGET_RTS = 0
 
 TARGET_ACCOUNTS = [a.strip().lstrip("@") for a in os.getenv("TARGET_ACCOUNTS", "").split(",") if a.strip()]
@@ -41,6 +39,7 @@ TARGET_ACCOUNTS = [a.strip().lstrip("@") for a in os.getenv("TARGET_ACCOUNTS", "
 # ---------------- STATE ----------------
 STATE_DIR = ".bot_state"
 REPLIED_IDS_FILE = os.path.join(STATE_DIR, "replied_ids.txt")
+STATE_JSON_FILE = os.path.join(STATE_DIR, "state.json")
 
 # ---------------- PROMPTS ----------------
 REPLY_PROMPT = (
@@ -72,6 +71,24 @@ def save_replied_id(tweet_id: str):
     ensure_state_dir()
     with open(REPLIED_IDS_FILE, "a", encoding="utf-8") as f:
         f.write(f"{tweet_id}\n")
+
+def load_state() -> dict:
+    ensure_state_dir()
+    if not os.path.exists(STATE_JSON_FILE):
+        return {}
+    try:
+        with open(STATE_JSON_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_state(state: dict):
+    ensure_state_dir()
+    with open(STATE_JSON_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+
+def now_epoch() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
 
 def utcnow():
     return datetime.now(timezone.utc)
@@ -118,14 +135,20 @@ def strip_quotes(text: str) -> str:
 def ai_client():
     return genai.Client(http_options=HttpOptions(api_version="v1"))
 
+def build_multi_from_query(handles: list[str]) -> str:
+    parts = [f"from:{h}" for h in handles if h]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return "(" + " OR ".join(parts) + ")"
+
 # ---------------- X CLIENTS ----------------
-# READ/search client
 client_read = tweepy.Client(
     bearer_token=os.getenv("X_BEARER_TOKEN"),
     wait_on_rate_limit=False  # IMPORTANT: don't sleep 900s in Actions
 )
 
-# WRITE/reply client
 client_write = tweepy.Client(
     consumer_key=os.getenv("X_API_KEY"),
     consumer_secret=os.getenv("X_API_SECRET"),
@@ -196,59 +219,94 @@ def ai_pick_best_tweet(candidates: list[dict]) -> dict | None:
 
     return finalists[0]
 
+# ---------------- FIND TARGET (ONE SEARCH + RL GUARD) ----------------
 def find_target_tweet() -> dict | None:
     if not TARGET_ACCOUNTS:
         print("SKIP: TARGET_ACCOUNTS is empty. Set it in GitHub Actions env.")
         return None
 
+    # Rate-limit guard: if we previously hit 429, skip until reset
+    state = load_state()
+    block_until = int(state.get("search_block_until", 0) or 0)
+    if now_epoch() < block_until:
+        wait_s = block_until - now_epoch()
+        print(f"RATE LIMIT GUARD: Skipping search (blocked for {wait_s}s).")
+        return None
+
     replied = load_replied_ids()
     pool = []
 
-    for handle in TARGET_ACCOUNTS:
-        query = f"from:{handle} -is:retweet -is:reply lang:en"
-        try:
-            resp = client_read.search_recent_tweets(
-                query=query,
-                max_results=min(PER_ACCOUNT_MAX, 100),
-                tweet_fields=["public_metrics", "created_at"],
-            )
-            if not resp or not resp.data:
+    from_query = build_multi_from_query(TARGET_ACCOUNTS)
+    query = f"{from_query} -is:retweet -is:reply lang:en"
+    max_results = min(CANDIDATE_POOL_LIMIT, 100)
+
+    try:
+        resp = client_read.search_recent_tweets(
+            query=query,
+            max_results=max_results,
+            tweet_fields=["public_metrics", "created_at"],
+        )
+
+        # If headers are available, log them (not always exposed by tweepy)
+        headers = getattr(resp, "headers", None)
+        if headers:
+            print("RL:", {
+                "limit": headers.get("x-rate-limit-limit"),
+                "remaining": headers.get("x-rate-limit-remaining"),
+                "reset": headers.get("x-rate-limit-reset"),
+            })
+
+        if not resp or not resp.data:
+            return None
+
+        for t in resp.data:
+            tid = str(t.id)
+            if tid in replied:
                 continue
 
-            for t in resp.data:
-                tid = str(t.id)
-                if tid in replied:
-                    continue
+            if not is_recent(t.created_at, MAX_TWEET_AGE_HOURS):
+                continue
 
-                if not is_recent(t.created_at, MAX_TWEET_AGE_HOURS):
-                    continue
+            m = t.public_metrics or {}
+            likes = m.get("like_count", 0)
+            rts = m.get("retweet_count", 0)
 
-                m = t.public_metrics or {}
-                likes = m.get("like_count", 0)
-                rts = m.get("retweet_count", 0)
+            if likes < MIN_TARGET_LIKES or rts < MIN_TARGET_RTS:
+                continue
 
-                if likes < MIN_TARGET_LIKES or rts < MIN_TARGET_RTS:
-                    continue
+            txt = (getattr(t, "text", "") or "").strip()
+            if len(txt) < 40:
+                continue
 
-                txt = (getattr(t, "text", "") or "").strip()
-                if len(txt) < 40:
-                    continue
+            pool.append({
+                "id": tid,
+                "text": txt[:500],
+                "created_at": t.created_at,
+                "metrics": m,
+                "score": engagement_score(m),
+                "author": "target"
+            })
 
-                pool.append({
-                    "id": tid,
-                    "text": txt[:500],
-                    "created_at": t.created_at,
-                    "metrics": m,
-                    "score": engagement_score(m),
-                    "author": handle
-                })
+    except tweepy.TooManyRequests as e:
+        # Persist reset time to stop hammering the endpoint on scheduled runs
+        reset = 0
+        try:
+            reset = int(getattr(e, "response", None).headers.get("x-rate-limit-reset", "0"))
+        except Exception:
+            reset = 0
 
-        except tweepy.TooManyRequests:
-            print("RATE LIMIT: X search rate limit hit. Skipping this run.")
-            return None
-        except Exception as e:
-            print(f"SEARCH: failed for {handle}: {repr(e)}")
-            continue
+        if reset <= now_epoch():
+            reset = now_epoch() + 15 * 60  # safe fallback if header missing
+
+        state["search_block_until"] = reset + 2
+        save_state(state)
+
+        print(f"RATE LIMIT: X search hit. Blocking until epoch={state['search_block_until']}. Skipping this run.")
+        return None
+
+    except Exception as e:
+        print("SEARCH: failed:", repr(e))
+        return None
 
     print("DEBUG: candidate pool size =", len(pool))
     if not pool:
@@ -256,7 +314,6 @@ def find_target_tweet() -> dict | None:
 
     pool.sort(key=lambda x: (x["score"], x["created_at"]), reverse=True)
     pool = pool[:CANDIDATE_POOL_LIMIT]
-
     return ai_pick_best_tweet(pool)
 
 # ---------------- AI: generate reply ----------------
