@@ -17,12 +17,17 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Restore bot state cache
+      # Make a daily key so cache can be updated each day
+      - name: Set cache date
+        run: echo "CACHE_DATE=$(date -u +%Y-%m-%d)" >> $GITHUB_ENV
+
+      - name: Restore/save bot state cache
         uses: actions/cache@v4
         with:
           path: .bot_state
-          key: bot-state-${{ github.ref_name }}
+          key: bot-state-${{ github.ref_name }}-${{ env.CACHE_DATE }}
           restore-keys: |
+            bot-state-${{ github.ref_name }}-
             bot-state-
 
       - name: Set up Python
