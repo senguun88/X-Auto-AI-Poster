@@ -34,6 +34,9 @@ AI_FINALISTS = 10
 MIN_TARGET_LIKES = 3
 MIN_TARGET_RTS = 0
 
+# Max 1 reply per author per cooldown window
+AUTHOR_COOLDOWN_HOURS = 24
+
 TARGET_ACCOUNTS = [a.strip().lstrip("@") for a in os.getenv("TARGET_ACCOUNTS", "").split(",") if a.strip()]
 
 # ---------------- STATE ----------------
@@ -143,6 +146,34 @@ def build_multi_from_query(handles: list[str]) -> str:
         return parts[0]
     return "(" + " OR ".join(parts) + ")"
 
+# --- Author cooldown helpers ---
+def author_key_from_user(user: dict) -> str:
+    if not user:
+        return ""
+    uid = str(user.get("id") or "").strip()
+    if uid:
+        return f"id:{uid}"
+    uname = str(user.get("username") or "").strip().lower()
+    if uname:
+        return f"user:{uname}"
+    return ""
+
+def is_author_on_cooldown(state: dict, akey: str, cooldown_hours: int) -> bool:
+    if not akey:
+        return False
+    author_map = state.get("author_last_replied", {}) or {}
+    last = int(author_map.get(akey, 0) or 0)
+    if last <= 0:
+        return False
+    return now_epoch() < (last + cooldown_hours * 3600)
+
+def mark_author_replied(state: dict, akey: str):
+    if not akey:
+        return
+    author_map = state.get("author_last_replied", {}) or {}
+    author_map[akey] = now_epoch()
+    state["author_last_replied"] = author_map
+
 # ---------------- X CLIENTS ----------------
 client_read = tweepy.Client(
     bearer_token=os.getenv("X_BEARER_TOKEN"),
@@ -244,7 +275,9 @@ def find_target_tweet() -> dict | None:
         resp = client_read.search_recent_tweets(
             query=query,
             max_results=max_results,
-            tweet_fields=["public_metrics", "created_at"],
+            tweet_fields=["public_metrics", "created_at", "author_id"],
+            expansions=["author_id"],
+            user_fields=["username"],
         )
 
         # If headers are available, log them (not always exposed by tweepy)
@@ -259,9 +292,30 @@ def find_target_tweet() -> dict | None:
         if not resp or not resp.data:
             return None
 
+        # Build author_id -> user dict map
+        users_by_id = {}
+        includes = getattr(resp, "includes", None)
+        if includes and isinstance(includes, dict) and includes.get("users"):
+            for u in includes["users"]:
+                if hasattr(u, "data") and isinstance(u.data, dict):
+                    ud = u.data
+                elif isinstance(u, dict):
+                    ud = u
+                else:
+                    ud = {"id": getattr(u, "id", None), "username": getattr(u, "username", None)}
+                if ud.get("id") is not None:
+                    users_by_id[str(ud["id"])] = ud
+
         for t in resp.data:
             tid = str(t.id)
             if tid in replied:
+                continue
+
+            # Author cooldown filter
+            author_id = str(getattr(t, "author_id", "") or "")
+            user = users_by_id.get(author_id, {})
+            akey = author_key_from_user(user) or (f"id:{author_id}" if author_id else "")
+            if is_author_on_cooldown(state, akey, AUTHOR_COOLDOWN_HOURS):
                 continue
 
             if not is_recent(t.created_at, MAX_TWEET_AGE_HOURS):
@@ -284,7 +338,8 @@ def find_target_tweet() -> dict | None:
                 "created_at": t.created_at,
                 "metrics": m,
                 "score": engagement_score(m),
-                "author": "target"
+                "author": (user.get("username") or author_id or "unknown"),
+                "author_key": akey
             })
 
     except tweepy.TooManyRequests as e:
@@ -341,7 +396,7 @@ def generate_reply(tweet_text: str) -> str:
 
     return filtered[0] if filtered else ""
 
-def post_reply(tweet_id: str, reply_text: str):
+def post_reply(tweet_id: str, reply_text: str, author_key: str = ""):
     if not reply_text:
         print("SKIP: empty reply after filtering.")
         raise SystemExit(0)
@@ -353,6 +408,12 @@ def post_reply(tweet_id: str, reply_text: str):
             user_auth=True
         )
         save_replied_id(tweet_id)
+
+        # Record author cooldown
+        state = load_state()
+        mark_author_replied(state, author_key)
+        save_state(state)
+
         print(f"REPLY: Posted ✅ to tweet {tweet_id}")
     except tweepy.TooManyRequests:
         print("RATE LIMIT: X write rate limit hit. Skipping.")
@@ -374,9 +435,10 @@ if not best:
 
 tid = best["id"]
 ttext = best["text"]
+author_key = best.get("author_key", "")
 
 reply = generate_reply(ttext)
 print("TARGET:", ttext[:220], "...")
 print("REPLY:", reply)
 
-post_reply(tid, reply)
+post_reply(tid, reply, author_key)
