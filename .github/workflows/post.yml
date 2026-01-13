@@ -17,18 +17,11 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # Make a daily key so cache can be updated each day
-      - name: Set cache date
-        run: echo "CACHE_DATE=$(date -u +%Y-%m-%d)" >> $GITHUB_ENV
-
       - name: Restore/save bot state cache
         uses: actions/cache@v4
         with:
           path: .bot_state
-          key: bot-state-${{ github.ref_name }}-${{ env.CACHE_DATE }}
-          restore-keys: |
-            bot-state-${{ github.ref_name }}-
-            bot-state-
+          key: bot-state-${{ github.repository }}-${{ github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,7 +41,7 @@ jobs:
       - name: Run reply-only bot
         run: python post_to_x.py
         env:
-          TARGET_ACCOUNTS: "unusual_whales,CoinDesk,Cointelegraph,WatcherGuru,TheBlock__"
+          TARGET_ACCOUNTS: "unusual_whales,CoinDesk,Cointelegraph,TheBlock__"
 
           # Bearer token for SEARCH
           X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
