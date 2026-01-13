@@ -10,18 +10,30 @@ on:
     - cron: "10 22 * * *" # 3:10 PM MT
     - cron: "40 23 * * *" # 4:40 PM MT
 
+# Prevent overlapping runs (overlap = extra API calls = rate limits)
+concurrency:
+  group: x-reply-bot
+  cancel-in-progress: true
+
 jobs:
   post:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Restore/save bot state cache
+      # DAILY cache key so state actually SAVES (cache only saves on key-miss)
+      - name: Set cache date (UTC)
+        run: echo "CACHE_DATE=$(date -u +%Y-%m-%d)" >> $GITHUB_ENV
+
+      - name: Restore bot state cache
         uses: actions/cache@v4
         with:
           path: .bot_state
-          key: bot-state-${{ github.repository }}-${{ github.ref_name }}
+          key: bot-state-${{ github.repository }}-${{ github.ref_name }}-${{ env.CACHE_DATE }}
+          restore-keys: |
+            bot-state-${{ github.repository }}-${{ github.ref_name }}-
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,6 +42,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install tweepy google-genai google-auth pytz
 
       - name: Write Google credentials
