@@ -37,6 +37,9 @@ MIN_TARGET_RTS = 0
 # Max 1 reply per author per cooldown window
 AUTHOR_COOLDOWN_HOURS = 24
 
+# Hard-block these authors entirely
+BLOCKED_USERNAMES = {"watcherguru", "watcher.guru", "watcher_guru"}
+
 TARGET_ACCOUNTS = [a.strip().lstrip("@") for a in os.getenv("TARGET_ACCOUNTS", "").split(",") if a.strip()]
 
 # ---------------- STATE ----------------
@@ -322,9 +325,14 @@ def find_target_tweet() -> dict | None:
             if tid in replied:
                 continue
 
-            # Author cooldown filter
             author_id = str(getattr(t, "author_id", "") or "")
             user = users_by_id.get(author_id, {})
+            username = (user.get("username") or "").lower().strip()
+
+            # Hard blocklist (stop replying to WatcherGuru etc.)
+            if username in BLOCKED_USERNAMES:
+                continue
+
             akey = author_key_from_user(user) or (f"id:{author_id}" if author_id else "")
             if is_author_on_cooldown(state, akey, AUTHOR_COOLDOWN_HOURS):
                 continue
@@ -354,6 +362,111 @@ def find_target_tweet() -> dict | None:
             })
 
     except tweepy.TooManyRequests as e:
+        # Persist reset time to stop hammering the endpoint on scheduled runs
         reset = 0
         try:
-            reset = int
+            reset = int(getattr(e, "response", None).headers.get("x-rate-limit-reset", "0"))
+        except Exception:
+            reset = 0
+
+        if reset <= now_epoch():
+            reset = now_epoch() + 15 * 60  # fallback
+
+        state["search_block_until"] = reset + 2
+        save_state(state)
+
+        print(f"RATE LIMIT: X search hit. Blocking until epoch={state['search_block_until']}. Skipping this run.")
+        return None
+
+    except Exception as e:
+        print("SEARCH: failed:", repr(e))
+        return None
+
+    print("DEBUG: candidate pool size =", len(pool))
+    if not pool:
+        return None
+
+    pool.sort(key=lambda x: (x["score"], x["created_at"]), reverse=True)
+    pool = pool[:CANDIDATE_POOL_LIMIT]
+    return ai_pick_best_tweet(pool)
+
+# ---------------- AI: generate reply ----------------
+def generate_reply(tweet_text: str) -> str:
+    c = ai_client()
+    prompt = REPLY_PROMPT + tweet_text.strip()
+
+    candidates = []
+    for _ in range(3):  # reduced from 6 to lower chance of Gemini 429
+        try:
+            resp = c.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        except Exception as e:
+            if is_gemini_429(e):
+                print("GEMINI 429: reply generation rate-limited. Skipping this run cleanly.")
+                return ""
+            raise
+
+        text = re.sub(r"\s+", " ", (resp.text or "").strip())
+        text = strip_quotes(text)
+        if text:
+            candidates.append(text[:MAX_REPLY_CHARS])
+
+    filtered = []
+    for x in candidates:
+        if basic_safety_block(x):
+            continue
+        if looks_like_price_anchor(x):
+            continue
+        if "@" in x:
+            continue
+        filtered.append(x)
+
+    return filtered[0] if filtered else ""
+
+def post_reply(tweet_id: str, reply_text: str, author_key: str = ""):
+    if not reply_text:
+        print("SKIP: empty reply after filtering.")
+        raise SystemExit(0)
+
+    try:
+        client_write.create_tweet(
+            text=reply_text,
+            in_reply_to_tweet_id=tweet_id,
+            user_auth=True
+        )
+        save_replied_id(tweet_id)
+
+        # Record author cooldown
+        state = load_state()
+        mark_author_replied(state, author_key)
+        save_state(state)
+
+        print(f"REPLY: Posted ✅ to tweet {tweet_id}")
+
+    except tweepy.TooManyRequests:
+        print("RATE LIMIT: X write rate limit hit. Skipping.")
+        raise SystemExit(0)
+
+    except tweepy.Forbidden as e:
+        r = getattr(e, "response", None)
+        if r is not None:
+            print("X STATUS:", r.status_code)
+            print("X BODY:", r.text)
+        else:
+            print("X Forbidden 403:", str(e))
+        raise SystemExit(0)
+
+# ---------------- MAIN (REPLY ONLY) ----------------
+best = find_target_tweet()
+if not best:
+    print("SKIP: No suitable target tweets found (reply-only mode).")
+    raise SystemExit(0)
+
+tid = best["id"]
+ttext = best["text"]
+author_key = best.get("author_key", "")
+
+reply = generate_reply(ttext)
+print("TARGET:", ttext[:220], "...")
+print("REPLY:", reply)
+
+post_reply(tid, reply, author_key)
