@@ -10,7 +10,6 @@ on:
     - cron: "10 22 * * *" # 3:10 PM MT
     - cron: "40 23 * * *" # 4:40 PM MT
 
-
 concurrency:
   group: x-reply-bot
   cancel-in-progress: true
@@ -24,6 +23,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set cache date (UTC)
+        shell: bash
         run: echo "CACHE_DATE=$(date -u +%Y-%m-%d)" >> $GITHUB_ENV
 
       - name: Restore bot state cache
@@ -40,27 +40,29 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install tweepy google-genai google-auth pytz
 
       - name: Debug - list repo files
+        shell: bash
         run: |
           pwd
           ls -la
 
+      # ✅ FIXED: no heredoc, no EOF indentation problems
       - name: Write Google credentials
+        shell: bash
         run: |
-          cat > /tmp/gcp_key.json <<'EOF'
-${{ secrets.GCP_SA_KEY_JSON }}
-EOF
+          printf '%s' '${{ secrets.GCP_SA_KEY_JSON }}' > /tmp/gcp_key.json
           python -c "import json; json.load(open('/tmp/gcp_key.json')); print('GCP JSON OK')"
 
       - name: Run reply-only bot
+        shell: bash
         run: python post_to_x.py
         env:
           TARGET_ACCOUNTS: "unusual_whales,CoinDesk,Cointelegraph,TheBlock__"
-
           X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
 
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp_key.json
