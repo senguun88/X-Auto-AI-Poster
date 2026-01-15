@@ -12,7 +12,7 @@ on:
 
 concurrency:
   group: x-reply-bot
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   post:
@@ -22,15 +22,12 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set cache date (UTC)
-        shell: bash
-        run: echo "CACHE_DATE=$(date -u +%Y-%m-%d)" >> $GITHUB_ENV
-
+      # Restore cache using a stable key (NOT daily) so user_id_cache persists
       - name: Restore bot state cache
         uses: actions/cache@v4
         with:
           path: .bot_state
-          key: bot-state-${{ github.repository }}-${{ github.ref_name }}-${{ env.CACHE_DATE }}
+          key: bot-state-${{ github.repository }}-${{ github.ref_name }}-v3
           restore-keys: |
             bot-state-${{ github.repository }}-${{ github.ref_name }}-
 
@@ -51,7 +48,6 @@ jobs:
           pwd
           ls -la
 
-      # ✅ FIXED: no heredoc, no EOF indentation problems
       - name: Write Google credentials
         shell: bash
         run: |
