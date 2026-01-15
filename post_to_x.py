@@ -9,12 +9,23 @@ import tweepy
 from google import genai
 from google.genai.types import HttpOptions
 
+# ============================================================
+#  REPLY-ONLY AI BOT (NEVER POSTS ORIGINAL TWEETS)
+#
+#  FIXES INCLUDED (copy/paste ready):
+#   ✅ Manual runs OVERRIDE rate-limit guard (so it won't get stuck)
+#   ✅ Auto-clears expired search_block_until
+#   ✅ Candidate cache is JSON-safe (no datetime objects)
+#   ✅ Better DEBUG logging + better error bodies
+#   ✅ Only treats TooManyRequests as rate limit if status==429
+# ============================================================
+
 # ---------------- SETTINGS ----------------
 TIMEZONE = "US/Mountain"
 QUIET_START = 23
 QUIET_END = 6
 
-RUN_CHANCE = 1.00
+RUN_CHANCE = 1.00  # scheduled runs only (manual always runs)
 
 MAX_REPLY_CHARS = 200
 MAX_TWEET_AGE_HOURS = 24
@@ -26,6 +37,8 @@ MIN_TARGET_LIKES = 3
 MIN_TARGET_RTS = 0
 
 AUTHOR_COOLDOWN_HOURS = 24
+
+# Candidate cache (helps manual reruns not hammer search)
 CANDIDATE_CACHE_MINUTES = 30
 
 BLOCKED_USERNAMES = {"watcherguru", "watcher.guru", "watcher_guru"}
@@ -190,15 +203,18 @@ def to_epoch(dt: datetime | None) -> int:
         dt = dt.replace(tzinfo=timezone.utc)
     return int(dt.timestamp())
 
-def get_status_and_body_from_exception(e: Exception):
+def get_status_body_headers(e: Exception):
     r = getattr(e, "response", None)
-    status = getattr(r, "status_code", None)
-    body = None
-    headers = None
-    if r is not None:
-        body = getattr(r, "text", None)
-        headers = getattr(r, "headers", None)
+    status = getattr(r, "status_code", None) if r is not None else None
+    body = getattr(r, "text", None) if r is not None else None
+    headers = getattr(r, "headers", None) if r is not None else None
     return status, body, headers
+
+def clear_search_block(state: dict, reason: str):
+    if "search_block_until" in state:
+        print(f"UNBLOCK: clearing search_block_until ({reason}).")
+        state.pop("search_block_until", None)
+        save_state(state)
 
 # ---------------- X CLIENTS ----------------
 client_read = tweepy.Client(
@@ -304,6 +320,21 @@ def find_target_tweet() -> dict | None:
     state = load_state()
     replied = load_replied_ids()
 
+    # Clear expired block
+    bu = int(state.get("search_block_until", 0) or 0)
+    if bu and now_epoch() >= bu:
+        clear_search_block(state, "expired")
+
+    # Rate-limit guard (manual run overrides)
+    block_until = int(state.get("search_block_until", 0) or 0)
+    if block_until and now_epoch() < block_until:
+        wait_s = block_until - now_epoch()
+        print(f"RATE LIMIT GUARD: blocked for {wait_s}s (until epoch={block_until}).")
+        if is_manual:
+            clear_search_block(state, "manual run override")
+        else:
+            return None
+
     # Candidate cache (JSON-safe)
     cache_exp = int(state.get("candidate_cache_expires", 0) or 0)
     cached = state.get("candidate_cache", []) or []
@@ -313,13 +344,6 @@ def find_target_tweet() -> dict | None:
             print(f"CACHE: Using {len(cached)} cached candidates (expires in {cache_exp - now_epoch()}s).")
             cached.sort(key=lambda x: (x.get("score", 0), x.get("created_at_epoch", 0)), reverse=True)
             return ai_pick_best_tweet(cached)
-
-    # Rate-limit guard
-    block_until = int(state.get("search_block_until", 0) or 0)
-    if now_epoch() < block_until:
-        wait_s = block_until - now_epoch()
-        print(f"RATE LIMIT GUARD: Skipping search (blocked for {wait_s}s).")
-        return None
 
     pool = []
     from_query = build_multi_from_query(TARGET_ACCOUNTS)
@@ -339,7 +363,6 @@ def find_target_tweet() -> dict | None:
             user_fields=["username"],
         )
 
-        # headers logging
         headers = getattr(resp, "headers", None)
         if not headers:
             inner = getattr(resp, "response", None)
@@ -427,36 +450,31 @@ def find_target_tweet() -> dict | None:
         print("DEBUG: candidate pool size =", len(pool))
 
     except tweepy.TooManyRequests as e:
-        status, body, headers = get_status_and_body_from_exception(e)
-        print("ERROR: Tweepy raised TooManyRequests, status =", status)
+        status, body, headers = get_status_body_headers(e)
+        print("ERROR: Tweepy TooManyRequests status =", status)
         if headers:
             print_rl_headers_from_headers(headers)
 
-        # ✅ Only treat as rate limit if it's actually 429
         if status == 429:
             reset = 0
             try:
                 reset = int(headers.get("x-rate-limit-reset", "0")) if headers else 0
             except Exception:
                 reset = 0
-
             if reset <= now_epoch():
                 reset = now_epoch() + 15 * 60
-
             jitter = random.randint(10, 90)
             state["search_block_until"] = reset + jitter
             save_state(state)
-
             print(f"RATE LIMIT (429): Blocking until epoch={state['search_block_until']}. Skipping this run.")
             return None
 
-        # Not 429 → this is something else (401/403/etc). Show body and fail this run.
         if body:
             print("NON-429 ERROR BODY:", body[:2000])
-        raise
+        return None
 
     except Exception as e:
-        status, body, headers = get_status_and_body_from_exception(e)
+        status, body, headers = get_status_body_headers(e)
         print("SEARCH: failed:", repr(e), "status=", status)
         if headers:
             print_rl_headers_from_headers(headers)
@@ -529,8 +547,8 @@ def post_reply(tweet_id: str, reply_text: str, author_key: str = ""):
         print(f"REPLY: Posted ✅ to tweet {tweet_id}")
 
     except tweepy.TooManyRequests as e:
-        status, body, headers = get_status_and_body_from_exception(e)
-        print("RATE LIMIT: X write TooManyRequests status =", status)
+        status, body, headers = get_status_body_headers(e)
+        print("WRITE TooManyRequests status =", status)
         if headers:
             print_rl_headers_from_headers(headers)
         if body:
@@ -538,14 +556,14 @@ def post_reply(tweet_id: str, reply_text: str, author_key: str = ""):
         raise SystemExit(0)
 
     except tweepy.Forbidden as e:
-        status, body, headers = get_status_and_body_from_exception(e)
+        status, body, headers = get_status_body_headers(e)
         print("X Forbidden status =", status)
         if body:
             print("X BODY:", body[:2000])
         raise SystemExit(0)
 
     except Exception as e:
-        status, body, headers = get_status_and_body_from_exception(e)
+        status, body, headers = get_status_body_headers(e)
         print("WRITE: failed:", repr(e), "status=", status)
         if body:
             print("WRITE ERROR BODY:", body[:2000])
