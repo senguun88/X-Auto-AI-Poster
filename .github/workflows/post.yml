@@ -3,12 +3,13 @@ name: Daily X Auto Post
 on:
   workflow_dispatch:
   schedule:
-    - cron: "10 14 * * *" # 7:10 AM MT (note: cron is UTC)
-    - cron: "40 15 * * *"
-    - cron: "10 18 * * *"
-    - cron: "40 19 * * *"
-    - cron: "10 22 * * *"
-    - cron: "40 23 * * *"
+    - cron: "10 14 * * *" # 7:10 AM MT
+    - cron: "40 15 * * *" # 8:40 AM MT
+    - cron: "10 18 * * *" # 11:10 AM MT
+    - cron: "40 19 * * *" # 12:40 PM MT
+    - cron: "10 22 * * *" # 3:10 PM MT
+    - cron: "40 23 * * *" # 4:40 PM MT
+
 
 concurrency:
   group: x-reply-bot
