@@ -4,45 +4,31 @@ from datetime import datetime, timezone, timedelta
 import json
 import pytz
 import re
+from typing import Optional
 
 import tweepy
 from google import genai
 from google.genai.types import HttpOptions
-
-# ============================================================
-#  REPLY-ONLY AI BOT (NEVER POSTS ORIGINAL TWEETS)
-#
-#  FIXES INCLUDED (copy/paste ready):
-#   ✅ Manual runs OVERRIDE rate-limit guard (so it won't get stuck)
-#   ✅ Auto-clears expired search_block_until
-#   ✅ Candidate cache is JSON-safe (no datetime objects)
-#   ✅ Better DEBUG logging + better error bodies
-#   ✅ Only treats TooManyRequests as rate limit if status==429
-# ============================================================
 
 # ---------------- SETTINGS ----------------
 TIMEZONE = "US/Mountain"
 QUIET_START = 23
 QUIET_END = 6
 
-RUN_CHANCE = 1.00  # scheduled runs only (manual always runs)
+RUN_CHANCE = 1.00  # scheduled runs only
 
 MAX_REPLY_CHARS = 200
 MAX_TWEET_AGE_HOURS = 24
 
-CANDIDATE_POOL_LIMIT = 30
-AI_FINALISTS = 10
-
+TWEETS_PER_ACCOUNT = 8          # how many recent tweets to pull per account
+AI_FINALISTS = 10               # how many candidates sent to AI picker
 MIN_TARGET_LIKES = 3
 MIN_TARGET_RTS = 0
-
 AUTHOR_COOLDOWN_HOURS = 24
 
-# Candidate cache (helps manual reruns not hammer search)
 CANDIDATE_CACHE_MINUTES = 30
 
 BLOCKED_USERNAMES = {"watcherguru", "watcher.guru", "watcher_guru"}
-
 TARGET_ACCOUNTS = [a.strip().lstrip("@") for a in os.getenv("TARGET_ACCOUNTS", "").split(",") if a.strip()]
 
 # ---------------- STATE ----------------
@@ -106,12 +92,19 @@ def now_epoch() -> int:
 def utcnow():
     return datetime.now(timezone.utc)
 
-def is_recent(dt: datetime, max_age_hours: int) -> bool:
+def is_recent(dt: Optional[datetime], max_age_hours: int) -> bool:
     if dt is None:
         return False
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return (utcnow() - dt) <= timedelta(hours=max_age_hours)
+
+def to_epoch(dt: Optional[datetime]) -> int:
+    if not dt:
+        return 0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
 
 def engagement_score(m: dict) -> int:
     likes = m.get("like_count", 0)
@@ -148,28 +141,13 @@ def strip_quotes(text: str) -> str:
 def ai_client():
     return genai.Client(http_options=HttpOptions(api_version="v1"))
 
-def build_multi_from_query(handles: list[str]) -> str:
-    parts = [f"from:{h}" for h in handles if h]
-    if not parts:
-        return ""
-    if len(parts) == 1:
-        return parts[0]
-    return "(" + " OR ".join(parts) + ")"
-
 def is_gemini_429(e: Exception) -> bool:
     msg = str(e).lower()
     return ("resource_exhausted" in msg) or ("429" in msg) or ("quota" in msg) or ("rate" in msg)
 
-def author_key_from_user(user: dict) -> str:
-    if not user:
-        return ""
-    uid = str(user.get("id") or "").strip()
-    if uid:
-        return f"id:{uid}"
-    uname = str(user.get("username") or "").strip().lower()
-    if uname:
-        return f"user:{uname}"
-    return ""
+def author_key_from_username(username: str) -> str:
+    u = (username or "").strip().lower()
+    return f"user:{u}" if u else ""
 
 def is_author_on_cooldown(state: dict, akey: str, cooldown_hours: int) -> bool:
     if not akey:
@@ -187,7 +165,7 @@ def mark_author_replied(state: dict, akey: str):
     author_map[akey] = now_epoch()
     state["author_last_replied"] = author_map
 
-def print_rl_headers_from_headers(headers):
+def print_rl(headers):
     if not headers:
         return
     print("RL:", {
@@ -196,13 +174,6 @@ def print_rl_headers_from_headers(headers):
         "reset": headers.get("x-rate-limit-reset"),
     })
 
-def to_epoch(dt: datetime | None) -> int:
-    if not dt:
-        return 0
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
-
 def get_status_body_headers(e: Exception):
     r = getattr(e, "response", None)
     status = getattr(r, "status_code", None) if r is not None else None
@@ -210,10 +181,10 @@ def get_status_body_headers(e: Exception):
     headers = getattr(r, "headers", None) if r is not None else None
     return status, body, headers
 
-def clear_search_block(state: dict, reason: str):
-    if "search_block_until" in state:
-        print(f"UNBLOCK: clearing search_block_until ({reason}).")
-        state.pop("search_block_until", None)
+def clear_block(state: dict, key: str, reason: str):
+    if key in state:
+        print(f"UNBLOCK: clearing {key} ({reason}).")
+        state.pop(key, None)
         save_state(state)
 
 # ---------------- X CLIENTS ----------------
@@ -260,16 +231,14 @@ if not is_manual:
     if hour >= QUIET_START or hour < QUIET_END:
         print(f"SKIP: Quiet hours ({hour}:00 {TIMEZONE})")
         raise SystemExit(0)
-
-    r = random.random()
-    if r > RUN_CHANCE:
-        print(f"SKIP: Random skip r={r:.3f} > chance={RUN_CHANCE}")
+    if random.random() > RUN_CHANCE:
+        print("SKIP: Random skip.")
         raise SystemExit(0)
 
-print("RUN: Proceeding (reply-only)")
+print("RUN: Proceeding (reply-only, timeline mode)")
 
 # ---------------- AI: pick best tweet ----------------
-def ai_pick_best_tweet(candidates: list[dict]) -> dict | None:
+def ai_pick_best_tweet(candidates: list[dict]) -> Optional[dict]:
     if not candidates:
         return None
 
@@ -288,207 +257,194 @@ def ai_pick_best_tweet(candidates: list[dict]) -> dict | None:
     )
 
     for i, t in enumerate(finalists):
-        created = t.get("created_at_str") or "unknown"
         prompt += (
-            f"{i}. author={t.get('author','?')} created={created} score={t.get('score',0)}\n"
+            f"{i}. author={t.get('author','?')} created={t.get('created_at_str','?')} "
+            f"likes={t.get('likes',0)} rts={t.get('rts',0)} score={t.get('score',0)}\n"
             f"   text={t.get('text','')}\n\n"
         )
 
     try:
         resp = c.models.generate_content(model="gemini-2.5-flash", contents=prompt)
         raw = (resp.text or "").strip()
-    except Exception as e:
-        if is_gemini_429(e):
-            print("GEMINI 429: pick step rate-limited. Falling back to top scored tweet.")
-            return finalists[0]
-        print("AI_PICK: Gemini call failed:", repr(e))
-        return finalists[0]
-
-    try:
         data = json.loads(raw)
         idx = int(data.get("best_index", 0))
         if 0 <= idx < len(finalists):
             print("AI_PICK reason:", data.get("reason", ""))
             return finalists[idx]
     except Exception as e:
-        print("AI_PICK: parse failed:", repr(e))
+        if is_gemini_429(e):
+            print("GEMINI 429: pick step rate-limited. Falling back to top scored tweet.")
+            return finalists[0]
+        print("AI_PICK: failed, falling back:", repr(e))
+        return finalists[0]
 
     return finalists[0]
 
-# ---------------- FIND TARGET ----------------
-def find_target_tweet() -> dict | None:
-    state = load_state()
-    replied = load_replied_ids()
-
-    # Clear expired block
-    bu = int(state.get("search_block_until", 0) or 0)
-    if bu and now_epoch() >= bu:
-        clear_search_block(state, "expired")
-
-    # Rate-limit guard (manual run overrides)
-    block_until = int(state.get("search_block_until", 0) or 0)
-    if block_until and now_epoch() < block_until:
-        wait_s = block_until - now_epoch()
-        print(f"RATE LIMIT GUARD: blocked for {wait_s}s (until epoch={block_until}).")
-        if is_manual:
-            clear_search_block(state, "manual run override")
-        else:
-            return None
-
-    # Candidate cache (JSON-safe)
-    cache_exp = int(state.get("candidate_cache_expires", 0) or 0)
-    cached = state.get("candidate_cache", []) or []
-    if cached and now_epoch() < cache_exp:
-        cached = [c for c in cached if str(c.get("id", "")) not in replied]
-        if cached:
-            print(f"CACHE: Using {len(cached)} cached candidates (expires in {cache_exp - now_epoch()}s).")
-            cached.sort(key=lambda x: (x.get("score", 0), x.get("created_at_epoch", 0)), reverse=True)
-            return ai_pick_best_tweet(cached)
-
-    pool = []
-    from_query = build_multi_from_query(TARGET_ACCOUNTS)
-    query = f"{from_query} -is:retweet -is:reply lang:en"
-    max_results = min(CANDIDATE_POOL_LIMIT, 100)
-
-    print("DEBUG: search query =", query)
-    print("DEBUG: max_results =", max_results)
-    print("DEBUG: filters => MIN_LIKES", MIN_TARGET_LIKES, "MAX_AGE_HOURS", MAX_TWEET_AGE_HOURS, "MIN_TEXT_LEN 40")
-
+# ---------------- FETCH VIA TIMELINES ----------------
+def username_to_user_id(username: str) -> Optional[str]:
     try:
-        resp = client_read.search_recent_tweets(
-            query=query,
-            max_results=max_results,
-            tweet_fields=["public_metrics", "created_at", "author_id"],
-            expansions=["author_id"],
-            user_fields=["username"],
-        )
-
+        resp = client_read.get_user(username=username)
         headers = getattr(resp, "headers", None)
         if not headers:
             inner = getattr(resp, "response", None)
             if inner is not None:
                 headers = getattr(inner, "headers", None)
-        print_rl_headers_from_headers(headers)
+        print_rl(headers)
+        if resp and resp.data and getattr(resp.data, "id", None):
+            return str(resp.data.id)
+    except Exception as e:
+        status, body, headers = get_status_body_headers(e)
+        print("get_user failed:", repr(e), "status=", status)
+        if headers:
+            print_rl(headers)
+        if body:
+            print("get_user body:", body[:1200])
+    return None
 
+def fetch_recent_from_user(user_id: str) -> list[dict]:
+    # timeline endpoint, not search
+    try:
+        resp = client_read.get_users_tweets(
+            id=user_id,
+            max_results=min(TWEETS_PER_ACCOUNT, 100),
+            tweet_fields=["public_metrics", "created_at", "referenced_tweets"],
+            exclude=["retweets", "replies"],
+        )
+        headers = getattr(resp, "headers", None)
+        if not headers:
+            inner = getattr(resp, "response", None)
+            if inner is not None:
+                headers = getattr(inner, "headers", None)
+        print_rl(headers)
+
+        out = []
         if not resp or not resp.data:
-            print("DEBUG: search returned no tweets.")
-            return None
-
-        # includes users
-        users_by_id = {}
-        includes = getattr(resp, "includes", None)
-        if includes and isinstance(includes, dict) and includes.get("users"):
-            for u in includes["users"]:
-                if hasattr(u, "data") and isinstance(u.data, dict):
-                    ud = u.data
-                elif isinstance(u, dict):
-                    ud = u
-                else:
-                    ud = {"id": getattr(u, "id", None), "username": getattr(u, "username", None)}
-                if ud.get("id") is not None:
-                    users_by_id[str(ud["id"])] = ud
-
-        dropped = {
-            "already_replied": 0,
-            "blocked_user": 0,
-            "author_cooldown": 0,
-            "too_old": 0,
-            "low_engagement": 0,
-            "too_short": 0,
-        }
+            return out
 
         for t in resp.data:
-            tid = str(t.id)
+            txt = (getattr(t, "text", "") or "").strip()
+            created = getattr(t, "created_at", None)
+            m = getattr(t, "public_metrics", None) or {}
+            out.append({
+                "id": str(t.id),
+                "text": txt[:500],
+                "created_at_epoch": to_epoch(created),
+                "created_at_str": created.strftime("%Y-%m-%d %H:%M UTC") if created else "unknown",
+                "metrics": m,
+                "likes": m.get("like_count", 0),
+                "rts": m.get("retweet_count", 0),
+                "score": engagement_score(m),
+            })
+        return out
+
+    except tweepy.TooManyRequests as e:
+        status, body, headers = get_status_body_headers(e)
+        print("timeline TooManyRequests status=", status)
+        if headers:
+            print_rl(headers)
+        return []
+    except Exception as e:
+        status, body, headers = get_status_body_headers(e)
+        print("timeline failed:", repr(e), "status=", status)
+        if headers:
+            print_rl(headers)
+        if body:
+            print("timeline body:", body[:1200])
+        return []
+
+# ---------------- FIND TARGET ----------------
+def find_target_tweet() -> Optional[dict]:
+    state = load_state()
+    replied = load_replied_ids()
+
+    # Manual run override for any previous block
+    if is_manual and state.get("timeline_block_until"):
+        clear_block(state, "timeline_block_until", "manual override")
+
+    block_until = int(state.get("timeline_block_until", 0) or 0)
+    if block_until and now_epoch() < block_until and not is_manual:
+        print(f"RATE LIMIT GUARD: timeline blocked for {block_until - now_epoch()}s.")
+        return None
+    if block_until and now_epoch() >= block_until:
+        clear_block(state, "timeline_block_until", "expired")
+
+    # candidate cache
+    cache_exp = int(state.get("candidate_cache_expires", 0) or 0)
+    cached = state.get("candidate_cache", []) or []
+    if cached and now_epoch() < cache_exp:
+        cached = [c for c in cached if str(c.get("id", "")) not in replied]
+        if cached:
+            print(f"CACHE: Using {len(cached)} cached candidates.")
+            cached.sort(key=lambda x: (x.get("score", 0), x.get("created_at_epoch", 0)), reverse=True)
+            return ai_pick_best_tweet(cached)
+
+    pool = []
+    dropped = {
+        "already_replied": 0,
+        "blocked_user": 0,
+        "author_cooldown": 0,
+        "too_old": 0,
+        "low_engagement": 0,
+        "too_short": 0,
+    }
+
+    for uname in TARGET_ACCOUNTS:
+        uname_l = uname.lower().strip()
+        if uname_l in BLOCKED_USERNAMES:
+            dropped["blocked_user"] += 1
+            continue
+
+        akey = author_key_from_username(uname_l)
+        if is_author_on_cooldown(state, akey, AUTHOR_COOLDOWN_HOURS):
+            dropped["author_cooldown"] += 1
+            continue
+
+        uid = username_to_user_id(uname)
+        if not uid:
+            continue
+
+        tweets = fetch_recent_from_user(uid)
+
+        for t in tweets:
+            tid = t["id"]
             if tid in replied:
                 dropped["already_replied"] += 1
                 continue
 
-            author_id = str(getattr(t, "author_id", "") or "")
-            user = users_by_id.get(author_id, {})
-            username = (user.get("username") or "").lower().strip()
-
-            if username in BLOCKED_USERNAMES:
-                dropped["blocked_user"] += 1
-                continue
-
-            akey = author_key_from_user(user) or (f"id:{author_id}" if author_id else "")
-            if is_author_on_cooldown(state, akey, AUTHOR_COOLDOWN_HOURS):
-                dropped["author_cooldown"] += 1
-                continue
-
-            if not is_recent(t.created_at, MAX_TWEET_AGE_HOURS):
+            # recency
+            created_epoch = t.get("created_at_epoch", 0)
+            created_dt = datetime.fromtimestamp(created_epoch, tz=timezone.utc) if created_epoch else None
+            if not is_recent(created_dt, MAX_TWEET_AGE_HOURS):
                 dropped["too_old"] += 1
                 continue
 
-            m = t.public_metrics or {}
-            likes = m.get("like_count", 0)
-            rts = m.get("retweet_count", 0)
+            # engagement
+            likes = t.get("likes", 0)
+            rts = t.get("rts", 0)
             if likes < MIN_TARGET_LIKES or rts < MIN_TARGET_RTS:
                 dropped["low_engagement"] += 1
                 continue
 
-            txt = (getattr(t, "text", "") or "").strip()
+            # text length
+            txt = (t.get("text") or "").strip()
             if len(txt) < 40:
                 dropped["too_short"] += 1
                 continue
 
-            created_epoch = to_epoch(t.created_at)
-            created_str = t.created_at.strftime("%Y-%m-%d %H:%M UTC") if t.created_at else "unknown"
+            t["author"] = uname
+            t["author_key"] = akey
+            pool.append(t)
 
-            pool.append({
-                "id": tid,
-                "text": txt[:500],
-                "created_at_epoch": created_epoch,
-                "created_at_str": created_str,
-                "metrics": m,
-                "score": engagement_score(m),
-                "author": (user.get("username") or author_id or "unknown"),
-                "author_key": akey
-            })
-
-        print("DEBUG: dropped counts =", dropped)
-        print("DEBUG: candidate pool size =", len(pool))
-
-    except tweepy.TooManyRequests as e:
-        status, body, headers = get_status_body_headers(e)
-        print("ERROR: Tweepy TooManyRequests status =", status)
-        if headers:
-            print_rl_headers_from_headers(headers)
-
-        if status == 429:
-            reset = 0
-            try:
-                reset = int(headers.get("x-rate-limit-reset", "0")) if headers else 0
-            except Exception:
-                reset = 0
-            if reset <= now_epoch():
-                reset = now_epoch() + 15 * 60
-            jitter = random.randint(10, 90)
-            state["search_block_until"] = reset + jitter
-            save_state(state)
-            print(f"RATE LIMIT (429): Blocking until epoch={state['search_block_until']}. Skipping this run.")
-            return None
-
-        if body:
-            print("NON-429 ERROR BODY:", body[:2000])
-        return None
-
-    except Exception as e:
-        status, body, headers = get_status_body_headers(e)
-        print("SEARCH: failed:", repr(e), "status=", status)
-        if headers:
-            print_rl_headers_from_headers(headers)
-        if body:
-            print("SEARCH ERROR BODY:", body[:2000])
-        return None
+    print("DEBUG: dropped counts =", dropped)
+    print("DEBUG: candidate pool size =", len(pool))
 
     if not pool:
         return None
 
-    pool.sort(key=lambda x: (x["score"], x["created_at_epoch"]), reverse=True)
-    pool = pool[:CANDIDATE_POOL_LIMIT]
+    pool.sort(key=lambda x: (x.get("score", 0), x.get("created_at_epoch", 0)), reverse=True)
 
-    state["candidate_cache"] = pool
+    # cache candidates
+    state["candidate_cache"] = pool[:50]
     state["candidate_cache_expires"] = now_epoch() + CANDIDATE_CACHE_MINUTES * 60
     save_state(state)
 
@@ -550,29 +506,29 @@ def post_reply(tweet_id: str, reply_text: str, author_key: str = ""):
         status, body, headers = get_status_body_headers(e)
         print("WRITE TooManyRequests status =", status)
         if headers:
-            print_rl_headers_from_headers(headers)
+            print_rl(headers)
         if body:
-            print("WRITE ERROR BODY:", body[:2000])
+            print("WRITE ERROR BODY:", body[:1200])
         raise SystemExit(0)
 
     except tweepy.Forbidden as e:
         status, body, headers = get_status_body_headers(e)
         print("X Forbidden status =", status)
         if body:
-            print("X BODY:", body[:2000])
+            print("X BODY:", body[:1200])
         raise SystemExit(0)
 
     except Exception as e:
         status, body, headers = get_status_body_headers(e)
         print("WRITE: failed:", repr(e), "status=", status)
         if body:
-            print("WRITE ERROR BODY:", body[:2000])
+            print("WRITE ERROR BODY:", body[:1200])
         raise SystemExit(0)
 
 # ---------------- MAIN ----------------
 best = find_target_tweet()
 if not best:
-    print("SKIP: No suitable target tweets found (reply-only mode).")
+    print("SKIP: No suitable target tweets found (timeline mode).")
     raise SystemExit(0)
 
 tid = best["id"]
