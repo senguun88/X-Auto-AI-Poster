@@ -12,11 +12,12 @@ from google.genai.types import HttpOptions
 # ============================================================
 #  REPLY-ONLY AI BOT (NEVER POSTS ORIGINAL TWEETS)
 #
-#  Fixes:
-#   - Better GitHub Actions cache compatibility (state persists daily via YAML)
-#   - Stronger rate-limit header logging (success + 429)
-#   - Optional short candidate caching to avoid hammering search on re-runs
-#   - Clean exit on rate limit (no 900s sleep)
+#  FIXES IN THIS VERSION:
+#   ✅ Candidate cache in state.json is JSON-safe (no raw datetime objects)
+#   ✅ Better DEBUG logs so you can see exactly WHY it skipped
+#   ✅ Stronger env validation (tokens/targets)
+#   ✅ Safer sorting using epoch timestamps
+#   ✅ More helpful error printing for search failures
 # ============================================================
 
 # ---------------- SETTINGS ----------------
@@ -87,13 +88,17 @@ def load_state() -> dict:
     try:
         with open(STATE_JSON_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except Exception as e:
+        print("WARN: state.json unreadable:", repr(e))
         return {}
 
 def save_state(state: dict):
     ensure_state_dir()
-    with open(STATE_JSON_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f)
+    try:
+        with open(STATE_JSON_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+    except Exception as e:
+        print("WARN: state.json write failed:", repr(e))
 
 def now_epoch() -> int:
     return int(datetime.now(timezone.utc).timestamp())
@@ -141,6 +146,7 @@ def strip_quotes(text: str) -> str:
     return text.strip().strip('"').strip("'")
 
 def ai_client():
+    # Works with Vertex when env GOOGLE_GENAI_USE_VERTEXAI=true and creds are set in workflow
     return genai.Client(http_options=HttpOptions(api_version="v1"))
 
 def build_multi_from_query(handles: list[str]) -> str:
@@ -191,6 +197,13 @@ def print_rl_headers_from_headers(headers):
         "reset": headers.get("x-rate-limit-reset"),
     })
 
+def to_epoch(dt: datetime | None) -> int:
+    if not dt:
+        return 0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
 # ---------------- X CLIENTS ----------------
 client_read = tweepy.Client(
     bearer_token=os.getenv("X_BEARER_TOKEN"),
@@ -212,6 +225,28 @@ hour = now_local.hour
 event_name = os.getenv("GITHUB_EVENT_NAME", "")
 is_manual = (event_name == "workflow_dispatch")
 
+print("DEBUG: event =", event_name, "manual =", is_manual, "local_hour =", hour, TIMEZONE)
+print("DEBUG: TARGET_ACCOUNTS =", TARGET_ACCOUNTS)
+
+bt = os.getenv("X_BEARER_TOKEN") or ""
+print("DEBUG: X_BEARER_TOKEN present =", bool(bt), "len =", len(bt))
+
+vertex_flag = (os.getenv("GOOGLE_GENAI_USE_VERTEXAI") or "").lower()
+print("DEBUG: GOOGLE_GENAI_USE_VERTEXAI =", vertex_flag)
+print("DEBUG: GOOGLE_CLOUD_PROJECT =", os.getenv("GOOGLE_CLOUD_PROJECT") or "")
+print("DEBUG: GOOGLE_CLOUD_LOCATION =", os.getenv("GOOGLE_CLOUD_LOCATION") or "")
+print("DEBUG: GOOGLE_APPLICATION_CREDENTIALS =", os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "")
+
+# Hard env checks (so you don't silently "work" but do nothing)
+if not TARGET_ACCOUNTS:
+    print("SKIP: TARGET_ACCOUNTS is empty. Set it in the workflow env.")
+    raise SystemExit(0)
+
+if not bt:
+    print("SKIP: X_BEARER_TOKEN missing. Add secret and pass env X_BEARER_TOKEN.")
+    raise SystemExit(0)
+
+# Quiet hours only for scheduled runs
 if not is_manual:
     if hour >= QUIET_START or hour < QUIET_END:
         print(f"SKIP: Quiet hours ({hour}:00 {TIMEZONE})")
@@ -223,9 +258,6 @@ if not is_manual:
         raise SystemExit(0)
 
 print("RUN: Proceeding (reply-only)")
-print("DEBUG: TARGET_ACCOUNTS =", TARGET_ACCOUNTS)
-bt = os.getenv("X_BEARER_TOKEN") or ""
-print("DEBUG: X_BEARER_TOKEN present =", bool(bt), "len =", len(bt))
 
 # ---------------- AI: pick best tweet ----------------
 def ai_pick_best_tweet(candidates: list[dict]) -> dict | None:
@@ -247,7 +279,7 @@ def ai_pick_best_tweet(candidates: list[dict]) -> dict | None:
     )
 
     for i, t in enumerate(finalists):
-        created = t["created_at"].strftime("%Y-%m-%d %H:%M UTC") if t.get("created_at") else "unknown"
+        created = t.get("created_at_str") or "unknown"
         prompt += (
             f"{i}. author={t.get('author','?')} created={created} score={t.get('score',0)}\n"
             f"   text={t.get('text','')}\n\n"
@@ -276,22 +308,17 @@ def ai_pick_best_tweet(candidates: list[dict]) -> dict | None:
 
 # ---------------- FIND TARGET ----------------
 def find_target_tweet() -> dict | None:
-    if not TARGET_ACCOUNTS:
-        print("SKIP: TARGET_ACCOUNTS is empty. Set it in GitHub Actions env.")
-        return None
-
     state = load_state()
     replied = load_replied_ids()
 
-    # 0) Candidate cache (helps manual re-runs not hammer search)
+    # 0) Candidate cache (JSON-safe)
     cache_exp = int(state.get("candidate_cache_expires", 0) or 0)
     cached = state.get("candidate_cache", []) or []
     if cached and now_epoch() < cache_exp:
-        # filter out already-replied ids in cached list
         cached = [c for c in cached if str(c.get("id", "")) not in replied]
         if cached:
             print(f"CACHE: Using {len(cached)} cached candidates (expires in {cache_exp - now_epoch()}s).")
-            cached.sort(key=lambda x: (x.get("score", 0), x.get("created_at")), reverse=True)
+            cached.sort(key=lambda x: (x.get("score", 0), x.get("created_at_epoch", 0)), reverse=True)
             return ai_pick_best_tweet(cached)
 
     # 1) Rate-limit guard
@@ -306,6 +333,10 @@ def find_target_tweet() -> dict | None:
     query = f"{from_query} -is:retweet -is:reply lang:en"
     max_results = min(CANDIDATE_POOL_LIMIT, 100)
 
+    print("DEBUG: search query =", query)
+    print("DEBUG: max_results =", max_results)
+    print("DEBUG: filters => MIN_LIKES", MIN_TARGET_LIKES, "MAX_AGE_HOURS", MAX_TWEET_AGE_HOURS, "MIN_TEXT_LEN 40")
+
     try:
         resp = client_read.search_recent_tweets(
             query=query,
@@ -315,8 +346,6 @@ def find_target_tweet() -> dict | None:
             user_fields=["username"],
         )
 
-        # Tweepy sometimes stores headers on response.response.headers; sometimes on resp.headers.
-        # We'll try both.
         headers = getattr(resp, "headers", None)
         if not headers:
             inner = getattr(resp, "response", None)
@@ -325,6 +354,7 @@ def find_target_tweet() -> dict | None:
         print_rl_headers_from_headers(headers)
 
         if not resp or not resp.data:
+            print("DEBUG: search returned no tweets.")
             return None
 
         users_by_id = {}
@@ -340,9 +370,19 @@ def find_target_tweet() -> dict | None:
                 if ud.get("id") is not None:
                     users_by_id[str(ud["id"])] = ud
 
+        dropped = {
+            "already_replied": 0,
+            "blocked_user": 0,
+            "author_cooldown": 0,
+            "too_old": 0,
+            "low_engagement": 0,
+            "too_short": 0,
+        }
+
         for t in resp.data:
             tid = str(t.id)
             if tid in replied:
+                dropped["already_replied"] += 1
                 continue
 
             author_id = str(getattr(t, "author_id", "") or "")
@@ -350,38 +390,47 @@ def find_target_tweet() -> dict | None:
             username = (user.get("username") or "").lower().strip()
 
             if username in BLOCKED_USERNAMES:
+                dropped["blocked_user"] += 1
                 continue
 
             akey = author_key_from_user(user) or (f"id:{author_id}" if author_id else "")
             if is_author_on_cooldown(state, akey, AUTHOR_COOLDOWN_HOURS):
+                dropped["author_cooldown"] += 1
                 continue
 
             if not is_recent(t.created_at, MAX_TWEET_AGE_HOURS):
+                dropped["too_old"] += 1
                 continue
 
             m = t.public_metrics or {}
             likes = m.get("like_count", 0)
             rts = m.get("retweet_count", 0)
-
             if likes < MIN_TARGET_LIKES or rts < MIN_TARGET_RTS:
+                dropped["low_engagement"] += 1
                 continue
 
             txt = (getattr(t, "text", "") or "").strip()
             if len(txt) < 40:
+                dropped["too_short"] += 1
                 continue
+
+            created_epoch = to_epoch(t.created_at)
+            created_str = t.created_at.strftime("%Y-%m-%d %H:%M UTC") if t.created_at else "unknown"
 
             pool.append({
                 "id": tid,
                 "text": txt[:500],
-                "created_at": t.created_at,
+                "created_at_epoch": created_epoch,   # JSON-safe
+                "created_at_str": created_str,       # JSON-safe
                 "metrics": m,
                 "score": engagement_score(m),
                 "author": (user.get("username") or author_id or "unknown"),
                 "author_key": akey
             })
 
+        print("DEBUG: dropped counts =", dropped)
+
     except tweepy.TooManyRequests as e:
-        # Persist reset time so scheduled runs stop hammering the endpoint
         reset = 0
         try:
             r = getattr(e, "response", None)
@@ -392,9 +441,8 @@ def find_target_tweet() -> dict | None:
             reset = 0
 
         if reset <= now_epoch():
-            reset = now_epoch() + 15 * 60  # fallback
+            reset = now_epoch() + 15 * 60
 
-        # add a little jitter so we don't slam exactly at reset second
         jitter = random.randint(10, 90)
         state["search_block_until"] = reset + jitter
         save_state(state)
@@ -403,6 +451,7 @@ def find_target_tweet() -> dict | None:
         return None
 
     except Exception as e:
+        # This is where you’ll see “401 Unauthorized”, “403”, etc.
         print("SEARCH: failed:", repr(e))
         return None
 
@@ -410,10 +459,10 @@ def find_target_tweet() -> dict | None:
     if not pool:
         return None
 
-    pool.sort(key=lambda x: (x["score"], x["created_at"]), reverse=True)
+    pool.sort(key=lambda x: (x["score"], x["created_at_epoch"]), reverse=True)
     pool = pool[:CANDIDATE_POOL_LIMIT]
 
-    # Save short-lived candidate cache (helps manual reruns)
+    # Save short-lived candidate cache (JSON-safe now)
     state["candidate_cache"] = pool
     state["candidate_cache_expires"] = now_epoch() + CANDIDATE_CACHE_MINUTES * 60
     save_state(state)
@@ -433,7 +482,8 @@ def generate_reply(tweet_text: str) -> str:
             if is_gemini_429(e):
                 print("GEMINI 429: reply generation rate-limited. Skipping this run cleanly.")
                 return ""
-            raise
+            print("GEMINI ERROR:", repr(e))
+            return ""
 
         text = re.sub(r"\s+", " ", (resp.text or "").strip())
         text = strip_quotes(text)
@@ -485,6 +535,10 @@ def post_reply(tweet_id: str, reply_text: str, author_key: str = ""):
             print("X BODY:", r.text)
         else:
             print("X Forbidden 403:", str(e))
+        raise SystemExit(0)
+
+    except Exception as e:
+        print("WRITE: failed:", repr(e))
         raise SystemExit(0)
 
 # ---------------- MAIN ----------------
