@@ -491,4 +491,25 @@ def post_reply(tweet_id: str, reply_text: str, author_key_str: str = ""):
 
     except Exception as e:
         status, body, headers = get_status_body_headers(e)
-        print("WRITE failed:", repr(e),
+        print("WRITE failed:", repr(e), "status=", status)
+        if headers:
+            print_rl(headers)
+        if body:
+            print("WRITE BODY:", body[:1200])
+        raise SystemExit(0)
+
+# ---------------- MAIN ----------------
+best = find_target()
+if not best:
+    print("SKIP: No suitable target tweets found (low-call mode).")
+    raise SystemExit(0)
+
+tid = best["id"]
+ttext = best["text"]
+akey = best.get("author_key", "")
+
+reply = generate_reply(ttext)
+print("TARGET:", ttext[:220], "...")
+print("REPLY:", reply)
+
+post_reply(tid, reply, akey)
