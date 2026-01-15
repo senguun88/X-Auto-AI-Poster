@@ -3,14 +3,13 @@ name: Daily X Auto Post
 on:
   workflow_dispatch:
   schedule:
-    - cron: "10 14 * * *" # 7:10 AM MT
-    - cron: "40 15 * * *" # 8:40 AM MT
-    - cron: "10 18 * * *" # 11:10 AM MT
-    - cron: "40 19 * * *" # 12:40 PM MT
-    - cron: "10 22 * * *" # 3:10 PM MT
-    - cron: "40 23 * * *" # 4:40 PM MT
+    - cron: "10 14 * * *" # 7:10 AM MT (note: cron is UTC)
+    - cron: "40 15 * * *"
+    - cron: "10 18 * * *"
+    - cron: "40 19 * * *"
+    - cron: "10 22 * * *"
+    - cron: "40 23 * * *"
 
-# Prevent overlapping runs (overlap = extra API calls = rate limits)
 concurrency:
   group: x-reply-bot
   cancel-in-progress: true
@@ -23,7 +22,6 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # DAILY cache key so state actually SAVES (cache only saves on key-miss)
       - name: Set cache date (UTC)
         run: echo "CACHE_DATE=$(date -u +%Y-%m-%d)" >> $GITHUB_ENV
 
@@ -42,30 +40,33 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install tweepy google-genai google-auth pytz
+
+      - name: Debug - list repo files
+        run: |
+          pwd
+          ls -la
 
       - name: Write Google credentials
         run: |
           cat > /tmp/gcp_key.json <<'EOF'
-          ${{ secrets.GCP_SA_KEY_JSON }}
-          EOF
+${{ secrets.GCP_SA_KEY_JSON }}
+EOF
+          python -c "import json; json.load(open('/tmp/gcp_key.json')); print('GCP JSON OK')"
 
       - name: Run reply-only bot
         run: python post_to_x.py
         env:
           TARGET_ACCOUNTS: "unusual_whales,CoinDesk,Cointelegraph,TheBlock__"
 
-          # Bearer token for SEARCH
           X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
 
-          # Google / Gemini (Vertex AI)
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp_key.json
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GOOGLE_CLOUD_LOCATION: global
-          GOOGLE_GENAI_USE_VERTEXAI: "True"
+          GOOGLE_CLOUD_LOCATION: us-central1
+          GOOGLE_GENAI_USE_VERTEXAI: "true"
 
-          # X user auth for REPLY
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
