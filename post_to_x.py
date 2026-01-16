@@ -12,10 +12,11 @@ from google.genai.types import HttpOptions
 # ============================================================
 #  REPLY-ONLY AI BOT (NEVER POSTS ORIGINAL TWEETS)
 #
-#  Key rate-limit fix:
+#  Rate-limit safe design:
 #   - NO user lookup endpoints (NO /2/users/by/username)
 #   - ONE recent search call per run
 #   - Uses expansions=author_id to get usernames (no extra calls)
+#   - Stores rate-limit reset proactively (on success AND on 429)
 #   - Exits cleanly on 429 (no long sleeps)
 # ============================================================
 
@@ -272,12 +273,13 @@ def find_target_tweet() -> dict | None:
         print("SKIP: TARGET_ACCOUNTS is empty. Set it in GitHub Actions env.")
         return None
 
-    # Rate-limit guard (for search endpoint)
     state = load_state()
     block_until = int(state.get("search_block_until", 0) or 0)
+    delta = block_until - now_epoch()
+    print("DEBUG: now_epoch=", now_epoch(), "block_until=", block_until, "delta_s=", delta)
+
     if now_epoch() < block_until:
-        wait_s = block_until - now_epoch()
-        print(f"RATE LIMIT GUARD: Skipping search (blocked for {wait_s}s).")
+        print(f"RATE LIMIT GUARD: Skipping search (blocked for {delta}s).")
         return None
 
     replied = load_replied_ids()
@@ -298,16 +300,27 @@ def find_target_tweet() -> dict | None:
 
         headers = getattr(resp, "headers", None)
         if headers:
-            print("RL:", {
+            rl = {
                 "limit": headers.get("x-rate-limit-limit"),
                 "remaining": headers.get("x-rate-limit-remaining"),
                 "reset": headers.get("x-rate-limit-reset"),
-            })
+            }
+            print("RL:", rl)
+
+            # Proactive guard: if we used the last request, store reset immediately
+            try:
+                remaining = int(rl["remaining"]) if rl["remaining"] is not None else None
+                reset = int(rl["reset"]) if rl["reset"] is not None else None
+                if remaining is not None and reset is not None and remaining <= 0:
+                    state["search_block_until"] = reset + 2
+                    save_state(state)
+                    print(f"RL GUARD: Stored block until epoch={state['search_block_until']}")
+            except Exception:
+                pass
 
         if not resp or not resp.data:
             return None
 
-        # author_id -> user dict map (from expansions, NO extra calls)
         users_by_id = {}
         includes = getattr(resp, "includes", None)
         if includes and isinstance(includes, dict) and includes.get("users"):
@@ -364,7 +377,13 @@ def find_target_tweet() -> dict | None:
     except tweepy.TooManyRequests as e:
         reset = 0
         try:
-            reset = int(getattr(e, "response", None).headers.get("x-rate-limit-reset", "0"))
+            h = getattr(e, "response", None).headers
+            print("DEBUG 429 headers:", {
+                "limit": h.get("x-rate-limit-limit"),
+                "remaining": h.get("x-rate-limit-remaining"),
+                "reset": h.get("x-rate-limit-reset"),
+            })
+            reset = int(h.get("x-rate-limit-reset", "0"))
         except Exception:
             reset = 0
 
