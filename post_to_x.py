@@ -12,10 +12,11 @@ from google.genai.types import HttpOptions
 # ============================================================
 #  REPLY-ONLY AI BOT (NEVER POSTS ORIGINAL TWEETS)
 #
-#  Rate-limit safe:
-#   - ONE search call per run (OR query across accounts)
-#   - Persists rate-limit reset in .bot_state/state.json
-#   - Exits cleanly on rate limit (no 900s sleep)
+#  Key rate-limit fix:
+#   - NO user lookup endpoints (NO /2/users/by/username)
+#   - ONE recent search call per run
+#   - Uses expansions=author_id to get usernames (no extra calls)
+#   - Exits cleanly on 429 (no long sleeps)
 # ============================================================
 
 # ---------------- SETTINGS ----------------
@@ -23,7 +24,7 @@ TIMEZONE = "US/Mountain"
 QUIET_START = 23
 QUIET_END = 6
 
-RUN_CHANCE = 1.00  # consider 0.30–0.50 if you schedule many runs/day
+RUN_CHANCE = 1.00  # consider 0.30–0.60 if you schedule many runs/day
 
 MAX_REPLY_CHARS = 200
 MAX_TWEET_AGE_HOURS = 24
@@ -34,13 +35,15 @@ AI_FINALISTS = 10
 MIN_TARGET_LIKES = 3
 MIN_TARGET_RTS = 0
 
-# Max 1 reply per author per cooldown window
 AUTHOR_COOLDOWN_HOURS = 24
 
-# Hard-block these authors entirely
 BLOCKED_USERNAMES = {"watcherguru", "watcher.guru", "watcher_guru"}
 
-TARGET_ACCOUNTS = [a.strip().lstrip("@") for a in os.getenv("TARGET_ACCOUNTS", "").split(",") if a.strip()]
+TARGET_ACCOUNTS = [
+    a.strip().lstrip("@")
+    for a in os.getenv("TARGET_ACCOUNTS", "").split(",")
+    if a.strip()
+]
 
 # ---------------- STATE ----------------
 STATE_DIR = ".bot_state"
@@ -149,12 +152,10 @@ def build_multi_from_query(handles: list[str]) -> str:
         return parts[0]
     return "(" + " OR ".join(parts) + ")"
 
-# --- Gemini 429 helper ---
 def is_gemini_429(e: Exception) -> bool:
     msg = str(e).lower()
     return ("resource_exhausted" in msg) or ("429" in msg) or ("quota" in msg) or ("rate" in msg)
 
-# --- Author cooldown helpers ---
 def author_key_from_user(user: dict) -> str:
     if not user:
         return ""
@@ -185,7 +186,7 @@ def mark_author_replied(state: dict, akey: str):
 # ---------------- X CLIENTS ----------------
 client_read = tweepy.Client(
     bearer_token=os.getenv("X_BEARER_TOKEN"),
-    wait_on_rate_limit=False  # IMPORTANT: don't sleep 900s in Actions
+    wait_on_rate_limit=False  # don't sleep inside Actions
 )
 
 client_write = tweepy.Client(
@@ -271,7 +272,7 @@ def find_target_tweet() -> dict | None:
         print("SKIP: TARGET_ACCOUNTS is empty. Set it in GitHub Actions env.")
         return None
 
-    # Rate-limit guard: if we previously hit 429, skip until reset
+    # Rate-limit guard (for search endpoint)
     state = load_state()
     block_until = int(state.get("search_block_until", 0) or 0)
     if now_epoch() < block_until:
@@ -306,7 +307,7 @@ def find_target_tweet() -> dict | None:
         if not resp or not resp.data:
             return None
 
-        # Build author_id -> user dict map
+        # author_id -> user dict map (from expansions, NO extra calls)
         users_by_id = {}
         includes = getattr(resp, "includes", None)
         if includes and isinstance(includes, dict) and includes.get("users"):
@@ -329,7 +330,6 @@ def find_target_tweet() -> dict | None:
             user = users_by_id.get(author_id, {})
             username = (user.get("username") or "").lower().strip()
 
-            # Hard blocklist (stop replying to WatcherGuru etc.)
             if username in BLOCKED_USERNAMES:
                 continue
 
@@ -362,7 +362,6 @@ def find_target_tweet() -> dict | None:
             })
 
     except tweepy.TooManyRequests as e:
-        # Persist reset time to stop hammering the endpoint on scheduled runs
         reset = 0
         try:
             reset = int(getattr(e, "response", None).headers.get("x-rate-limit-reset", "0"))
@@ -370,7 +369,7 @@ def find_target_tweet() -> dict | None:
             reset = 0
 
         if reset <= now_epoch():
-            reset = now_epoch() + 15 * 60  # fallback
+            reset = now_epoch() + 15 * 60
 
         state["search_block_until"] = reset + 2
         save_state(state)
@@ -396,7 +395,7 @@ def generate_reply(tweet_text: str) -> str:
     prompt = REPLY_PROMPT + tweet_text.strip()
 
     candidates = []
-    for _ in range(3):  # reduced from 6 to lower chance of Gemini 429
+    for _ in range(3):
         try:
             resp = c.models.generate_content(model="gemini-2.5-flash", contents=prompt)
         except Exception as e:
@@ -435,7 +434,6 @@ def post_reply(tweet_id: str, reply_text: str, author_key: str = ""):
         )
         save_replied_id(tweet_id)
 
-        # Record author cooldown
         state = load_state()
         mark_author_replied(state, author_key)
         save_state(state)
@@ -455,7 +453,7 @@ def post_reply(tweet_id: str, reply_text: str, author_key: str = ""):
             print("X Forbidden 403:", str(e))
         raise SystemExit(0)
 
-# ---------------- MAIN (REPLY ONLY) ----------------
+# ---------------- MAIN ----------------
 best = find_target_tweet()
 if not best:
     print("SKIP: No suitable target tweets found (reply-only mode).")
