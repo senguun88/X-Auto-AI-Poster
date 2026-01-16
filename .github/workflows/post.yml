@@ -17,11 +17,17 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      # Daily key so the cache can save updated state each day
+      - name: Set cache date
+        run: echo "CACHE_DATE=$(date -u +%Y-%m-%d)" >> $GITHUB_ENV
+
       - name: Restore/save bot state cache
         uses: actions/cache@v4
         with:
           path: .bot_state
-          key: bot-state-${{ github.repository }}-${{ github.ref_name }}
+          key: bot-state-${{ github.repository }}-${{ github.ref_name }}-${{ env.CACHE_DATE }}
+          restore-keys: |
+            bot-state-${{ github.repository }}-${{ github.ref_name }}-
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,6 +36,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install tweepy google-genai google-auth pytz
 
       - name: Write Google credentials
@@ -49,10 +56,10 @@ jobs:
           # Google / Gemini (Vertex AI)
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp_key.json
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GOOGLE_CLOUD_LOCATION: global
+          GOOGLE_CLOUD_LOCATION: us-central1
           GOOGLE_GENAI_USE_VERTEXAI: "True"
 
-          # X user auth for REPLY
+          # X user auth for REPLY (OAuth 1.0a)
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
