@@ -383,6 +383,16 @@ def find_target_tweet() -> dict | None:
                 "remaining": h.get("x-rate-limit-remaining"),
                 "reset": h.get("x-rate-limit-reset"),
             })
+
+        try:
+            r = getattr(e, "response", None)
+            if r is not None:
+                print("DEBUG 429 status:", r.status_code)
+                print("DEBUG 429 body:", r.text[:1000])
+        except Exception:
+            pass
+
+            
             reset = int(h.get("x-rate-limit-reset", "0"))
         except Exception:
             reset = 0
