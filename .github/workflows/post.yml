@@ -44,49 +44,45 @@ jobs:
           ${{ secrets.GCP_SA_KEY_JSON }}
           EOF
 
-      # ✅ 1) ORIGINAL POSTS (keep running)
+      # ✅ ORIGINAL POSTS (no search endpoints)
       - name: Run original post bot
         run: python post_original.py
         env:
-          # Gemini / Vertex
+          TIMEZONE: "US/Mountain"
+          POST_RUN_CHANCE: "0.35"
+          MAX_CHARS: "260"
+
+          # Gemini / Vertex AI
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp_key.json
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GOOGLE_CLOUD_LOCATION: us-central1
           GOOGLE_GENAI_USE_VERTEXAI: "True"
 
-          # X user auth for POSTING (OAuth 1.0a)
+          # X user auth for posting
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
           X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
 
-      # ⛔ 2) REPLY BOT (paused until Feb 12)
-      - name: Pause guard for replies (stop until Feb 12, 00:00 UTC)
-        run: |
-          PAUSE_UNTIL="2026-02-12T00:00:00Z"
-          NOW_EPOCH=$(date -u +%s)
-          PAUSE_EPOCH=$(date -u -d "$PAUSE_UNTIL" +%s)
-          if [ "$NOW_EPOCH" -lt "$PAUSE_EPOCH" ]; then
-            echo "PAUSED REPLIES: Not running reply bot until $PAUSE_UNTIL (now=$(date -u))."
-            exit 0
-          fi
-          echo "REPLY PAUSE OVER: Continuing (now=$(date -u))."
-
-      - name: Run reply-only bot
+      # ⛔ REPLIES (paused until Feb 12 reset)
+      - name: Run reply-only bot (paused until Feb 12)
         run: python post_to_x.py
         env:
+          # if your reply script uses PAUSE_UNTIL_UTC (as in your pasted version):
+          PAUSE_UNTIL_UTC: "2026-02-12T00:00:00Z"
+
           TARGET_ACCOUNTS: "unusual_whales,CoinDesk,Cointelegraph,TheBlock__"
 
-          # Bearer token for SEARCH (this is what you’re capped on)
+          # Bearer token for SEARCH (this is what is capped)
           X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
 
-          # Gemini / Vertex
+          # Gemini / Vertex AI
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp_key.json
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GOOGLE_CLOUD_LOCATION: us-central1
           GOOGLE_GENAI_USE_VERTEXAI: "True"
 
-          # X user auth for REPLY (OAuth 1.0a)
+          # X user auth for replying
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
