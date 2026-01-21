@@ -14,11 +14,34 @@ from google.genai.types import HttpOptions
 #
 #  Rate-limit safe design:
 #   - NO user lookup endpoints (NO /2/users/by/username)
-#   - ONE recent search call per run
+#   - ONE recent search call per run (when enabled)
 #   - Uses expansions=author_id to get usernames (no extra calls)
 #   - Stores rate-limit reset proactively (on success AND on 429)
 #   - Exits cleanly on 429 (no long sleeps)
+#
+#  NEW: PAUSE GUARD (stops ALL work until a UTC timestamp)
 # ============================================================
+
+# ---------------- PAUSE UNTIL (UTC) ----------------
+# Example: "2026-02-12T00:00:00Z"
+PAUSE_UNTIL_UTC = os.getenv("PAUSE_UNTIL_UTC", "").strip()
+
+def parse_pause_until(s: str):
+    if not s:
+        return None
+    # Accept "Z" or "+00:00"
+    s = s.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(s).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+_pause_dt = parse_pause_until(PAUSE_UNTIL_UTC)
+if _pause_dt is not None:
+    now_utc = datetime.now(timezone.utc)
+    if now_utc < _pause_dt:
+        print(f"PAUSED: Bot is disabled until {PAUSE_UNTIL_UTC} (now={now_utc.isoformat()}).")
+        raise SystemExit(0)
 
 # ---------------- SETTINGS ----------------
 TIMEZONE = "US/Mountain"
@@ -187,7 +210,7 @@ def mark_author_replied(state: dict, akey: str):
 # ---------------- X CLIENTS ----------------
 client_read = tweepy.Client(
     bearer_token=os.getenv("X_BEARER_TOKEN"),
-    wait_on_rate_limit=False  # don't sleep inside Actions
+    wait_on_rate_limit=False
 )
 
 client_write = tweepy.Client(
@@ -307,7 +330,6 @@ def find_target_tweet() -> dict | None:
             }
             print("RL:", rl)
 
-            # Proactive guard: if we used the last request, store reset immediately
             try:
                 remaining = int(rl["remaining"]) if rl["remaining"] is not None else None
                 reset = int(rl["reset"]) if rl["reset"] is not None else None
@@ -383,7 +405,6 @@ def find_target_tweet() -> dict | None:
                 "remaining": h.get("x-rate-limit-remaining"),
                 "reset": h.get("x-rate-limit-reset"),
             })
-
             try:
                 r = getattr(e, "response", None)
                 if r is not None:
@@ -391,8 +412,6 @@ def find_target_tweet() -> dict | None:
                     print("DEBUG 429 body:", r.text[:1000])
             except Exception:
                 pass
-
-            
             reset = int(h.get("x-rate-limit-reset", "0"))
         except Exception:
             reset = 0
