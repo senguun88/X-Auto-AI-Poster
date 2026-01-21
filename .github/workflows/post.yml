@@ -33,10 +33,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install dependencies (pinned)
         run: |
           pip install --upgrade pip
-          pip install tweepy google-genai google-auth pytz
+          pip install "tweepy==4.14.0" google-genai google-auth pytz
 
       - name: Write Google credentials
         run: |
@@ -44,7 +44,31 @@ jobs:
           ${{ secrets.GCP_SA_KEY_JSON }}
           EOF
 
-      # ✅ ORIGINAL POSTS (no search endpoints)
+      # ✅ Safe diagnostics (NO secret values printed)
+      - name: Diagnostics (safe)
+        run: |
+          python - <<'PY'
+          import os
+          def s(name):
+              v = os.getenv(name, "")
+              print(f"{name}: present={bool(v)} len={len(v)}")
+          for k in ["X_API_KEY","X_API_SECRET","X_ACCESS_TOKEN","X_ACCESS_SECRET","X_BEARER_TOKEN",
+                    "GOOGLE_CLOUD_PROJECT","GOOGLE_CLOUD_LOCATION","GOOGLE_APPLICATION_CREDENTIALS",
+                    "GOOGLE_GENAI_USE_VERTEXAI"]:
+              s(k)
+          PY
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp_key.json
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          GOOGLE_CLOUD_LOCATION: us-central1
+          GOOGLE_GENAI_USE_VERTEXAI: "True"
+
+      # ✅ ORIGINAL POSTS (no search endpoints) - uses OAuth1 v1.1 posting in your updated post_original.py
       - name: Run original post bot
         run: python post_original.py
         env:
@@ -68,7 +92,6 @@ jobs:
       - name: Run reply-only bot (paused until Feb 12)
         run: python post_to_x.py
         env:
-          # if your reply script uses PAUSE_UNTIL_UTC (as in your pasted version):
           PAUSE_UNTIL_UTC: "2026-02-12T00:00:00Z"
 
           TARGET_ACCOUNTS: "unusual_whales,CoinDesk,Cointelegraph,TheBlock__"
