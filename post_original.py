@@ -66,6 +66,7 @@ def clamp_text(s: str, n: int) -> str:
 def should_skip_now(is_manual: bool) -> None:
     if is_manual:
         return
+
     tz = pytz.timezone(TIMEZONE)
     hour = datetime.now(tz).hour
     if hour >= QUIET_START or hour < QUIET_END:
@@ -103,10 +104,9 @@ is_manual = (event_name == "workflow_dispatch")
 should_skip_now(is_manual)
 
 state = load_state()
-
 print("RUN: Proceeding (original post)")
 
-# 1) Generate text
+# 1) Generate post text
 try:
     c = ai_client()
     resp = c.models.generate_content(model="gemini-2.5-flash", contents=POST_PROMPT)
@@ -123,7 +123,7 @@ if is_duplicate_today(state, post_text):
     print("SKIP: duplicate content today (hash match).")
     raise SystemExit(0)
 
-# 2) Post via OAuth1 + tweepy.API (most reliable)
+# 2) Post via X API v2 (POST /2/tweets)
 api_key = os.getenv("X_API_KEY")
 api_secret = os.getenv("X_API_SECRET")
 access_token = os.getenv("X_ACCESS_TOKEN")
@@ -140,25 +140,26 @@ if missing:
     print("ERROR: Missing secrets:", ", ".join(missing))
     raise SystemExit(1)
 
-try:
-    auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_secret)
-    api = tweepy.API(auth, wait_on_rate_limit=False)
+client_write = tweepy.Client(
+    consumer_key=api_key,
+    consumer_secret=api_secret,
+    access_token=access_token,
+    access_token_secret=access_secret,
+    wait_on_rate_limit=False,
+)
 
-    status = api.update_status(status=post_text)
+try:
+    resp = client_write.create_tweet(text=post_text, user_auth=True)
     remember_post(state, post_text)
-    print("POSTED ✅ id=", getattr(status, "id", None))
+    print("POSTED ✅:", resp.data)
     print("TEXT:", post_text)
 
 except tweepy.Forbidden as e:
-    # Tweepy v4 puts server response in e.api_messages/e.response sometimes
     print("X Forbidden 403")
-    try:
-        r = getattr(e, "response", None)
-        if r is not None:
-            print("X STATUS:", r.status_code)
-            print("X BODY:", (r.text or "")[:1200])
-    except Exception:
-        pass
+    r = getattr(e, "response", None)
+    if r is not None:
+        print("X STATUS:", r.status_code)
+        print("X BODY:", (r.text or "")[:1200])
     print("DETAIL:", str(e)[:500])
     raise SystemExit(0)
 
