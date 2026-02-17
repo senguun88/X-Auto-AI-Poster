@@ -43,7 +43,6 @@ TOPICS = [
     "crypto market structure (liquidity, order books, ETFs, flows)",
     "macro basics in plain English (rates, inflation, jobs data) — but make it fresh",
     "trading psychology (FOMO, chop, risk management, position sizing)",
-    "common crypto scams and how to spot them",
     "on-chain signals explained simply (without numbers)",
     "tech + AI + markets crossover (how narratives spread)",
     "productivity/discipline lessons from trading (habits, focus, rules)",
